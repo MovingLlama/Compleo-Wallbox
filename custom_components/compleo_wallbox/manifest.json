@@ -1,11 +1,15 @@
 {
   "domain": "compleo_wallbox",
   "name": "Compleo Wallbox",
-  "codeowners": ["@MovingLlama"],
+  "codeowners": [
+    "@MovingLlama"
+  ],
   "config_flow": true,
   "documentation": "https://github.com/MovingLlama/Compleo-Wallbox",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/MovingLlama/Compleo-Wallbox/issues",
-  "requirements": ["pymodbus>=3.0.0"],
-  "version": "1.0.0"
+  "requirements": [
+    "pymodbus>=3.0.0"
+  ],
+  "version": "0.1.4"
 }
