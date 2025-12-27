@@ -1,6 +1,7 @@
 """Support for Compleo Wallbox number settings."""
 from __future__ import annotations
 
+import logging
 from homeassistant.components.number import NumberEntity, NumberDeviceClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfPower
@@ -9,6 +10,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
+
+_LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -43,7 +46,9 @@ class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
         """Return the current value."""
         raw = self.coordinator.data.get("power_setpoint_abs")
         # Laut PDF: Unsigned Integer, 100W-Schritte
-        return raw * 100 if raw is not None else None
+        if raw is not None:
+            return float(raw * 100)
+        return None
 
     @property
     def device_info(self):
@@ -52,11 +57,24 @@ class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         """Update the current value."""
+        # Wert zurück in 100W Einheiten rechnen
         modbus_val = int(value / 100)
+        
         try:
+            # Den erkannten Parameter (slave/unit/device_id) vom Coordinator nutzen
             param = self.coordinator._param_name or "slave"
-            # Wir schreiben auf Register 0x0000 (Holding)
-            await self.coordinator.client.write_register(0x0000, modbus_val, **{param: 1})
-            await self.coordinator.async_request_refresh()
+            
+            if not self.coordinator.client.connected:
+                await self.coordinator.client.connect()
+
+            # Wir schreiben auf Holding Register 0x0000
+            result = await self.coordinator.client.write_register(0x0000, modbus_val, **{param: 1})
+            
+            if result.isError():
+                _LOGGER.error("Modbus error while writing power limit: %s", result)
+            else:
+                # Sofortiges Update anfordern, damit der neue Wert angezeigt wird
+                await self.coordinator.async_request_refresh()
+                
         except Exception as err:
-            self.coordinator.logger.error("Error writing power limit: %s", err)
+            _LOGGER.error("Error writing power limit to Compleo Wallbox: %s", err)
