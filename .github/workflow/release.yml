@@ -1,6 +1,7 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - 'v*'
@@ -10,21 +11,43 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # Wichtig: Schreibrechte für Releases UND Repository
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Wichtig für Git Operationen
 
-      - name: Create ZIP file for manual install
+      - name: Update manifest version
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          cd custom_components
-          zip -r ../compleo_wallbox.zip compleo_wallbox
-          cd ..
+          # Git konfigurieren für den Commit
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
+          # Version extrahieren
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "Neue Version: $VERSION"
+          
+          # manifest.json updaten
+          jq --arg ver "$VERSION" '.version = $ver' custom_components/compleo_walbox/manifest.json > manifest.tmp && mv manifest.tmp custom_components/compleo_walbox/manifest.json
+          
+          # Änderungen committen und pushen
+          git add custom_components/compleo_walbox/manifest.json
+          git commit -m "chore: bump version to $VERSION [skip ci]" || echo "Keine Änderungen zum Committen"
+          # Wir pushen auf den Branch, von dem der Tag kam (meist main/master)
+          git push origin HEAD:main || echo "Push fehlgeschlagen oder nicht notwendig"
+
+      - name: Zip component directory
+        run: |
+          cd custom_components/compleo_walbox
+          zip -r ../../compleo_walbox.zip .
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: compleo_wallbox.zip
+          files: compleo_walbox.zip
           generate_release_notes: true
           draft: false
           prerelease: false
