@@ -17,12 +17,14 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Compleo numbers."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([CompleoPowerLimit(coordinator)])
+    uid_prefix = entry.unique_id or coordinator.host
+    async_add_entities([CompleoPowerLimit(coordinator, uid_prefix)])
 
 
 class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
     """Representation of the Charging Power Limit."""
 
+    _attr_has_entity_name = True
     _attr_name = "Charging Power Limit"
     _attr_native_unit_of_measurement = UnitOfPower.WATT
     _attr_device_class = NumberDeviceClass.POWER
@@ -31,15 +33,16 @@ class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
     _attr_native_step = 100
     _attr_icon = "mdi:speedometer"
 
-    def __init__(self, coordinator):
+    def __init__(self, coordinator, uid_prefix):
         """Initialize."""
         super().__init__(coordinator)
-        self._attr_unique_id = f"{coordinator.host}_power_limit"
+        self._attr_unique_id = f"{uid_prefix}_power_limit"
 
     @property
     def native_value(self):
         """Return the current value."""
         raw = self.coordinator.data.get("power_setpoint_abs")
+        # Laut PDF: Unsigned Integer, 100W-Schritte
         return raw * 100 if raw is not None else None
 
     @property
@@ -51,8 +54,8 @@ class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
         """Update the current value."""
         modbus_val = int(value / 100)
         try:
-            # Nutzt den erkannten Parameter (device_id, slave oder unit)
             param = self.coordinator._param_name or "slave"
+            # Wir schreiben auf Register 0x0000 (Holding)
             await self.coordinator.client.write_register(0x0000, modbus_val, **{param: 1})
             await self.coordinator.async_request_refresh()
         except Exception as err:

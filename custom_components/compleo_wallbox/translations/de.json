@@ -4,6 +4,7 @@
       "user": {
         "title": "Verbindung zur Compleo Wallbox",
         "data": {
+          "name": "Name des Geräts",
           "host": "IP-Adresse",
           "port": "Port (Standard 502)"
         }

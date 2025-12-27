@@ -8,14 +8,15 @@ import voluptuous as vol
 from pymodbus.client import AsyncModbusTcpClient
 
 from homeassistant import config_entries
-from homeassistant.const import CONF_HOST, CONF_PORT
+from homeassistant.const import CONF_HOST, CONF_PORT, CONF_NAME
 from homeassistant.data_entry_flow import FlowResult
 
-from .const import DOMAIN, DEFAULT_PORT
+from .const import DOMAIN, DEFAULT_PORT, DEFAULT_NAME
 
 _LOGGER = logging.getLogger(__name__)
 
 DATA_SCHEMA = vol.Schema({
+    vol.Required(CONF_NAME, default=DEFAULT_NAME): str,
     vol.Required(CONF_HOST): str,
     vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
 })
@@ -41,6 +42,7 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             
             user_input[CONF_HOST] = host
             port = user_input[CONF_PORT]
+            name = user_input[CONF_NAME]
 
             client = AsyncModbusTcpClient(host, port=port)
             try:
@@ -48,31 +50,28 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if not client.connected:
                     errors["base"] = "cannot_connect"
                 else:
-                    # Wir versuchen ein sehr sicheres Register zu lesen: 0x0000 (Holding)
-                    # Dies ist die Leistungsvorgabe und sollte immer existieren.
+                    # Test-Lesen um Kommunikation zu verifizieren
                     success = False
-                    for param in ["device_id", "slave", "unit"]:
+                    for param in ["slave", "unit", "device_id"]:
                         try:
-                            kwargs = {param: 1}
-                            # Versuche Register 0x0000 (Holding) statt 0x000E (Input)
-                            rr = await client.read_holding_registers(0x0000, 1, **kwargs)
+                            # Register 0x0000 (Holding) ist die Leistungsvorgabe
+                            rr = await client.read_holding_registers(0x0000, 1, **{param: 1})
                             if rr is not None and not rr.isError():
                                 success = True
                                 break
-                        except TypeError:
-                            continue
                         except Exception:
                             continue
                     
-                    client.close()
-                    
-                    # Wenn wir verbunden sind, lassen wir das Setup zu, auch wenn das 
-                    # Test-Lesen fehlschlug (manche Boxen sind im Standby sehr restriktiv)
-                    await self.async_set_unique_id(f"{host}:{port}")
+                    if not success:
+                        # Wir erlauben es trotzdem, falls die Box gerade beschäftigt ist,
+                        # geben aber eine Warnung im Log aus.
+                        _LOGGER.warning("Could not verify Modbus registers during setup, proceeding anyway")
+
+                    await self.async_set_unique_id(f"{host}_{port}")
                     self._abort_if_unique_id_configured()
 
                     return self.async_create_entry(
-                        title=f"Compleo {host}",
+                        title=name,
                         data=user_input
                     )
             except Exception:

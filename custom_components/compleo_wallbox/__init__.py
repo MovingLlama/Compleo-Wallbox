@@ -10,7 +10,7 @@ from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.exceptions import ModbusException
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform, CONF_HOST, CONF_PORT
+from homeassistant.const import Platform, CONF_HOST, CONF_PORT, CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.update_coordinator import (
@@ -28,8 +28,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Compleo Wallbox from a config entry."""
     host = entry.data[CONF_HOST]
     port = entry.data[CONF_PORT]
+    name = entry.data.get(CONF_NAME, "Compleo Wallbox")
 
-    coordinator = CompleoDataUpdateCoordinator(hass, host, port)
+    coordinator = CompleoDataUpdateCoordinator(hass, host, port, name)
 
     try:
         await coordinator.async_config_entry_first_refresh()
@@ -54,12 +55,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching Compleo Wallbox data."""
 
-    def __init__(self, hass: HomeAssistant, host: str, port: int) -> None:
+    def __init__(self, hass: HomeAssistant, host: str, port: int, name: str) -> None:
         """Initialize."""
         self.host = host
         self.client = AsyncModbusTcpClient(host, port=port)
+        self.device_name = name
         self.device_info_map = {}
-        self._param_name = None # Merkt sich, welcher Parameter funktioniert
+        self._param_name = None 
         
         super().__init__(
             hass,
@@ -69,38 +71,32 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
     async def _read_registers_safe(self, func_name, address, count, slave_id=1):
-        """Helper to call read functions with either 'device_id', 'slave' or 'unit'."""
-        func = getattr(self.client, func_name)
-        
-        # Wenn wir schon wissen, was funktioniert, nutzen wir es
-        if self._param_name:
-            return await func(address, count, **{self._param_name: slave_id})
-
-        # Sonst probieren wir es aus (Wichtig für den ersten Start)
-        for param in ["device_id", "slave", "unit"]:
-            try:
-                result = await func(address, count, **{param: slave_id})
-                self._param_name = param
-                return result
-            except TypeError:
-                continue
-        
-        raise UpdateFailed("Could not determine correct Modbus parameter (device_id/slave/unit)")
-
-    async def _async_update_data(self):
-        """Fetch data from the wallbox."""
+        """Helper to call read functions with automatic parameter detection."""
         if not self.client.connected:
             await self.client.connect()
 
+        func = getattr(self.client, func_name)
+        
+        if self._param_name:
+            return await func(address, count, **{self._param_name: slave_id})
+
+        for param in ["slave", "unit", "device_id"]:
+            try:
+                result = await func(address, count, **{param: slave_id})
+                if result is not None and not result.isError():
+                    self._param_name = param
+                    return result
+            except (TypeError, Exception):
+                continue
+        
+        raise UpdateFailed("Could not communicate with Modbus device")
+
+    async def _async_update_data(self):
+        """Fetch data from the wallbox."""
         try:
             data = {}
             
-            # --- READ GLOBAL REGISTERS ---
-            rr_hold = await self._read_registers_safe("read_holding_registers", 0, 6)
-            if not rr_hold.isError():
-                data["power_setpoint_abs"] = rr_hold.registers[0]
-                data["power_setpoint_percent"] = rr_hold.registers[1]
-            
+            # Global Registers (System Info)
             rr_input_sys = await self._read_registers_safe("read_input_registers", 6, 11)
             if not rr_input_sys.isError():
                 regs = rr_input_sys.registers
@@ -111,16 +107,16 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                 
                 hw_type_map = {1: "P4", 2: "P51/PM51", 3: "P52"}
                 hw_val = regs[8]
-                data["model"] = hw_type_map.get(hw_val, f"Unknown ({hw_val})")
+                data["model"] = hw_type_map.get(hw_val, f"Solo ({hw_val})")
                 
-                rr_serial = await self._read_registers_safe("read_input_registers", 32, 16)
-                if not rr_serial.isError():
-                    data["serial_number"] = self._decode_string(rr_serial.registers)
+            rr_serial = await self._read_registers_safe("read_input_registers", 32, 16)
+            if not rr_serial.isError():
+                data["serial_number"] = self._decode_string(rr_serial.registers)
                 
-            # --- READ CHARGE POINT 1 REGISTERS (Base 0x1000) ---
-            rr_cp_hold = await self._read_registers_safe("read_holding_registers", 0x1000, 1)
-            if not rr_cp_hold.isError():
-                data["cp_max_power"] = rr_cp_hold.registers[0]
+            # Charging Point Registers (Base 0x1000)
+            rr_hold = await self._read_registers_safe("read_holding_registers", 0, 1)
+            if not rr_hold.isError():
+                data["power_setpoint_abs"] = rr_hold.registers[0]
 
             rr_cp_input = await self._read_registers_safe("read_input_registers", 0x1001, 26)
             if not rr_cp_input.isError():
@@ -138,21 +134,20 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                 rfid_regs = regs[15:25]
                 data["rfid_tag"] = self._decode_string(rfid_regs)
 
-            if "serial_number" in data:
-                self.device_info_map = {
-                    "identifiers": {(DOMAIN, data["serial_number"])},
-                    "name": "Compleo Wallbox",
-                    "manufacturer": "Compleo",
-                    "model": data.get("model", "Solo"),
-                    "sw_version": data.get("firmware_version"),
-                }
+            # Update device info with serial number if available
+            serial = data.get("serial_number", self.host)
+            self.device_info_map = {
+                "identifiers": {(DOMAIN, serial)},
+                "name": self.device_name,
+                "manufacturer": "Compleo",
+                "model": data.get("model", "Solo"),
+                "sw_version": data.get("firmware_version"),
+            }
 
             return data
 
-        except ModbusException as exception:
-            raise UpdateFailed(f"Modbus connection error: {exception}")
         except Exception as exception:
-            raise UpdateFailed(f"Unexpected error: {exception}")
+            raise UpdateFailed(f"Error communicating with Modbus: {exception}")
 
     def _decode_string(self, registers):
         """Decode a list of registers to a string."""
@@ -160,6 +155,9 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         for reg in registers:
             if reg == 0:
                 continue
-            b = struct.pack('>H', reg)
-            result += b.decode('ascii', errors='ignore')
-        return result.strip('\x00').strip()
+            try:
+                b = struct.pack('>H', reg)
+                result += b.decode('ascii', errors='ignore')
+            except Exception:
+                continue
+        return result.strip('\x00').strip() 
