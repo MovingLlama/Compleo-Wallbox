@@ -34,7 +34,6 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             host = user_input[CONF_HOST].strip()
-            # Protokoll-Präfixe entfernen, falls der User sie eingegeben hat
             if "://" in host:
                 host = host.split("://")[-1]
             
@@ -48,19 +47,28 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if not connected:
                     errors["base"] = "cannot_connect"
                 else:
+                    # Wir testen IDs 1 und 255 (häufige Modbus-TCP Defaults)
                     success = False
-                    for param in ["slave", "unit", "device_id"]:
-                        try:
-                            # 0x0006 ist die Firmware (Input Register)
-                            rr = await client.read_input_registers(0x0006, 1, **{param: 1})
-                            if rr is not None and not rr.isError():
-                                success = True
-                                break
-                        except Exception:
-                            continue
+                    for slave_id in [1, 255]:
+                        for param in ["slave", "unit", "device_id"]:
+                            try:
+                                # Teste Firmware (0x0006) oder Status (0x1001)
+                                rr = await client.read_input_registers(0x0006, 1, **{param: slave_id})
+                                if rr is not None and not rr.isError():
+                                    success = True
+                                    break
+                            except Exception:
+                                continue
+                        if success:
+                            break
                     
                     if not success:
-                        _LOGGER.warning("Modbus connection established but registers could not be read. Check Slave ID or Firewall.")
+                        _LOGGER.warning(
+                            "Modbus connected to %s, but could not read registers. "
+                            "This can happen if Modbus-TCP is disabled in the wallbox settings "
+                            "or if another device is already connected.", 
+                            host
+                        )
                     
                     await self.async_set_unique_id(f"{host}_{port}")
                     self._abort_if_unique_id_configured()
@@ -73,7 +81,6 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception in config flow")
                 errors["base"] = "cannot_connect"
             finally:
-                # Korrektur: close() ist bei AsyncModbusTcpClient keine awaitable Methode
                 client.close()
 
         return self.async_show_form(
