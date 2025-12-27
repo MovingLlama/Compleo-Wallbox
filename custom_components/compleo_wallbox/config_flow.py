@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from typing import Any
 
 import voluptuous as vol
@@ -41,21 +42,25 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             port = user_input[CONF_PORT]
             name = user_input[CONF_NAME]
 
-            client = AsyncModbusTcpClient(host, port=port)
+            client = AsyncModbusTcpClient(host, port=port, timeout=5)
             try:
                 connected = await client.connect()
                 if not connected:
                     errors["base"] = "cannot_connect"
                 else:
-                    # Wir testen IDs 1 und 255 (häufige Modbus-TCP Defaults)
+                    # Kurze Pause, da manche Modbus-Stacks Zeit nach dem Connect brauchen
+                    await asyncio.sleep(1)
+                    
                     success = False
-                    for slave_id in [1, 255]:
+                    # Wir testen verschiedene Slave-IDs, da Compleo-Modelle variieren können
+                    for slave_id in [1, 255, 0]:
                         for param in ["slave", "unit", "device_id"]:
                             try:
-                                # Teste Firmware (0x0006) oder Status (0x1001)
+                                # Teste Firmware-Register (0x0006)
                                 rr = await client.read_input_registers(0x0006, 1, **{param: slave_id})
                                 if rr is not None and not rr.isError():
                                     success = True
+                                    _LOGGER.info("Successfully communicated with Slave ID %s using %s", slave_id, param)
                                     break
                             except Exception:
                                 continue
@@ -64,9 +69,8 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     
                     if not success:
                         _LOGGER.warning(
-                            "Modbus connected to %s, but could not read registers. "
-                            "This can happen if Modbus-TCP is disabled in the wallbox settings "
-                            "or if another device is already connected.", 
+                            "Modbus connection to %s established, but could not read registers. "
+                            "Will proceed anyway, but sensors might be unavailable initially.", 
                             host
                         )
                     

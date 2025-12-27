@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from homeassistant.components.number import NumberEntity, NumberDeviceClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfPower
@@ -66,6 +67,7 @@ class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
             
             if not self.coordinator.client.connected:
                 await self.coordinator.client.connect()
+                await asyncio.sleep(0.5) # Kurze Pause nach Reconnect
 
             # Wir schreiben auf Holding Register 0x0000
             result = await self.coordinator.client.write_register(0x0000, modbus_val, **{param: 1})
