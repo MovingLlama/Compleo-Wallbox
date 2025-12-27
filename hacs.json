@@ -1,5 +1,14 @@
 {
   "name": "Compleo Wallbox",
   "render_readme": true,
-  "filename": "compleo_wallbox.zip"
+  "filename": "compleo_wallbox.zip",
+  "zip_release": true,
+  "homeassistant": "2024.1.0",
+  "iot_class": "local_polling",
+  "keywords": [
+    "compleo",
+    "evse",
+    "wallbox",
+    "modbus"
+  ]
 }

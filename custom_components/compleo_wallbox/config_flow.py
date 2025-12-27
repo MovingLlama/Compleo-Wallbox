@@ -32,6 +32,7 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
+            # Eingabe bereinigen
             host = user_input[CONF_HOST].strip()
             if host.startswith("http://"):
                 host = host[7:]
@@ -47,21 +48,26 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if not client.connected:
                     errors["base"] = "cannot_connect"
                 else:
-                    # Parameter-Check für verschiedene Pymodbus Versionen
-                    rr = None
+                    # Wir versuchen ein sehr sicheres Register zu lesen: 0x0000 (Holding)
+                    # Dies ist die Leistungsvorgabe und sollte immer existieren.
+                    success = False
                     for param in ["device_id", "slave", "unit"]:
                         try:
                             kwargs = {param: 1}
-                            rr = await client.read_input_registers(0x000E, 1, **kwargs)
-                            break
+                            # Versuche Register 0x0000 (Holding) statt 0x000E (Input)
+                            rr = await client.read_holding_registers(0x0000, 1, **kwargs)
+                            if rr is not None and not rr.isError():
+                                success = True
+                                break
                         except TypeError:
+                            continue
+                        except Exception:
                             continue
                     
                     client.close()
                     
-                    if rr is None or rr.isError():
-                         _LOGGER.warning("Connected but failed to read register during setup at %s", host)
-                    
+                    # Wenn wir verbunden sind, lassen wir das Setup zu, auch wenn das 
+                    # Test-Lesen fehlschlug (manche Boxen sind im Standby sehr restriktiv)
                     await self.async_set_unique_id(f"{host}:{port}")
                     self._abort_if_unique_id_configured()
 
