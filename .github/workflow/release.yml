@@ -1,0 +1,30 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create ZIP file for manual install
+        run: |
+          cd custom_components
+          zip -r ../compleo_wallbox.zip compleo_wallbox
+          cd ..
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: compleo_wallbox.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false
