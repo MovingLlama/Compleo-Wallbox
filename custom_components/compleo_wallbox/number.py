@@ -18,7 +18,6 @@ async def async_setup_entry(
     """Set up the Compleo numbers."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
     
-    # Register 0x0000: Power Setpoint Absolute (100W steps)
     async_add_entities([
         CompleoPowerLimit(coordinator)
     ])
@@ -31,7 +30,6 @@ class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
     _attr_native_unit_of_measurement = UnitOfPower.WATT
     _attr_device_class = NumberDeviceClass.POWER
     _attr_native_min_value = 0
-    # Assuming max 22kW (22000W) or 11kW. Let's safe default 22000.
     _attr_native_max_value = 22000 
     _attr_native_step = 100
     _attr_icon = "mdi:speedometer"
@@ -44,7 +42,6 @@ class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
     @property
     def native_value(self):
         """Return the current value."""
-        # Modbus value is in 100W steps. Convert to W for HA.
         raw = self.coordinator.data.get("power_setpoint_abs")
         if raw is not None:
             return raw * 100
@@ -57,13 +54,14 @@ class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         """Update the current value."""
-        # Convert W back to 100W steps
         modbus_val = int(value / 100)
         
-        # Write to Register 0x0000
-        # Note: We must use the client from the coordinator
         try:
-            await self.coordinator.client.write_register(0x0000, modbus_val, slave=1)
+            try:
+                await self.coordinator.client.write_register(0x0000, modbus_val, slave=1)
+            except TypeError:
+                await self.coordinator.client.write_register(0x0000, modbus_val, unit=1)
+                
             await self.coordinator.async_request_refresh()
         except Exception as err:
             self.coordinator.logger.error("Error writing power limit: %s", err)

@@ -32,18 +32,14 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            # Eingabe bereinigen: Leerzeichen entfernen
+            # Eingabe bereinigen
             host = user_input[CONF_HOST].strip()
-            
-            # Falls versehentlich http:// oder https:// eingegeben wurde, entfernen
             if host.startswith("http://"):
                 host = host[7:]
             elif host.startswith("https://"):
                 host = host[8:]
             
-            # Bereinigten Host zurückschreiben für die Speicherung
             user_input[CONF_HOST] = host
-            
             port = user_input[CONF_PORT]
 
             # Validate connection
@@ -51,12 +47,15 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             try:
                 await client.connect()
                 if not client.connected:
-                    # Wenn pymodbus keine Verbindung aufbauen kann
                     errors["base"] = "cannot_connect"
                 else:
-                    # Connection successful, try to read a register to verify (e.g., HW Type at 0x000E)
-                    # Using slave=1 as default
-                    rr = await client.read_input_registers(0x000E, 1, slave=1)
+                    # Try reading with 'slave', fallback to 'unit' if TypeError occurs
+                    try:
+                        rr = await client.read_input_registers(0x000E, 1, slave=1)
+                    except TypeError:
+                        # Fallback for pymodbus versions using 'unit' instead of 'slave'
+                        rr = await client.read_input_registers(0x000E, 1, unit=1)
+                    
                     client.close()
                     
                     if rr.isError():
@@ -73,7 +72,6 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception in config flow")
                 errors["base"] = "cannot_connect"
             finally:
-                # Sicherstellen, dass der Client geschlossen wird
                 client.close()
 
         return self.async_show_form(
