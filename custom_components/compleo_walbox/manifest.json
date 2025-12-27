@@ -1,0 +1,11 @@
+{
+  "domain": "compleo_wallbox",
+  "name": "Compleo Wallbox",
+  "codeowners": ["@dein_github_username"],
+  "config_flow": true,
+  "documentation": "https://github.com/MovingLlama/compleo_wallbox",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/MovingLlama/compleo_wallbox/issues",
+  "requirements": [],
+  "version": "1.0.0"
+}
