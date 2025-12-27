@@ -1,44 +1,46 @@
-name: Main
+name: Automatic Release
 
 on:
-  workflow_dispatch:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main  # Feuert bei jedem Push auf Main
+  workflow_dispatch: # Erlaubt manuelles Starten
 
 jobs:
   release:
     name: Create Release
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Wichtig: Schreibrechte für Releases UND Repository
-    
+      contents: write # Wichtig für Releases
       
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # Wichtig für Git Operationen
 
-      - name: Update manifest version
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Generate Version Number
+        id: version
         run: |
-          # Git konfigurieren für den Commit
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
+          # Wir bauen eine Version aus einer Basisnummer und der GitHub Run Number
+          # Das garantiert, dass die Nummer immer steigt (wichtig für HACS Updates)
+          # Beispiel Ergebnis: v0.1.45
+          
+          MAJOR_MINOR="0.1"
+          RUN_NUMBER="${{ github.run_number }}"
+          
+          VERSION="v${MAJOR_MINOR}.${RUN_NUMBER}"
+          CLEAN_VERSION="${MAJOR_MINOR}.${RUN_NUMBER}"
+          
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "CLEAN_VERSION=$CLEAN_VERSION" >> $GITHUB_ENV
+          
+          echo "Generierte Version: $VERSION"
 
-          # Version extrahieren
-          VERSION=${GITHUB_REF#refs/tags/v}
-          echo "Neue Version: $VERSION"
+      - name: Update manifest.json (Temporary for Zip)
+        run: |
+          # Version in der manifest.json für das ZIP Paket setzen
+          jq --arg ver "${{ env.CLEAN_VERSION }}" '.version = $ver' custom_components/compleo_wallbox/manifest.json > manifest.tmp && mv manifest.tmp custom_components/compleo_wallbox/manifest.json
           
-          # manifest.json updaten
-          jq --arg ver "$VERSION" '.version = $ver' custom_components/compleo_wallbox/manifest.json > manifest.tmp && mv manifest.tmp custom_components/compleo_wallbox/manifest.json
-          
-          # Änderungen committen und pushen
-          git add custom_components/compleo_wallbox/manifest.json
-          git commit -m "chore: bump version to $VERSION [skip ci]" || echo "Keine Änderungen zum Committen"
-          # Wir pushen auf den Branch, von dem der Tag kam (meist main/master)
-          git push origin HEAD:main || echo "Push fehlgeschlagen oder nicht notwendig"
+          echo "Manifest Version temporär auf ${{ env.CLEAN_VERSION }} gesetzt."
 
       - name: Zip component directory
         run: |
@@ -48,7 +50,9 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.VERSION }}     # Setzt den Tag automatisch (z.B. v0.1.45)
+          name: Release ${{ env.VERSION }} # Titel des Releases
           files: compleo_wallbox.zip
-          generate_release_notes: true
+          generate_release_notes: true     # Generiert automatisch Notizen aus den Commits
           draft: false
           prerelease: false

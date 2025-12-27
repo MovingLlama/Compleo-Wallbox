@@ -59,6 +59,7 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         self.host = host
         self.client = AsyncModbusTcpClient(host, port=port)
         self.device_info_map = {}
+        self._param_name = None # Merkt sich, welcher Parameter funktioniert
         
         super().__init__(
             hass,
@@ -68,12 +69,23 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         )
 
     async def _read_registers_safe(self, func_name, address, count, slave_id=1):
-        """Helper to call read functions with either 'slave' or 'unit'."""
+        """Helper to call read functions with either 'device_id', 'slave' or 'unit'."""
         func = getattr(self.client, func_name)
-        try:
-            return await func(address, count, slave=slave_id)
-        except TypeError:
-            return await func(address, count, unit=slave_id)
+        
+        # Wenn wir schon wissen, was funktioniert, nutzen wir es
+        if self._param_name:
+            return await func(address, count, **{self._param_name: slave_id})
+
+        # Sonst probieren wir es aus (Wichtig für den ersten Start)
+        for param in ["device_id", "slave", "unit"]:
+            try:
+                result = await func(address, count, **{param: slave_id})
+                self._param_name = param
+                return result
+            except TypeError:
+                continue
+        
+        raise UpdateFailed("Could not determine correct Modbus parameter (device_id/slave/unit)")
 
     async def _async_update_data(self):
         """Fetch data from the wallbox."""
@@ -84,50 +96,41 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             data = {}
             
             # --- READ GLOBAL REGISTERS ---
-            # Holding 0-5
             rr_hold = await self._read_registers_safe("read_holding_registers", 0, 6)
             if not rr_hold.isError():
-                data["power_setpoint_abs"] = rr_hold.registers[0] # 100W steps
+                data["power_setpoint_abs"] = rr_hold.registers[0]
                 data["power_setpoint_percent"] = rr_hold.registers[1]
             
-            # Input 6-16 (FW, Hardware)
             rr_input_sys = await self._read_registers_safe("read_input_registers", 6, 11)
             if not rr_input_sys.isError():
                 regs = rr_input_sys.registers
-                # FW Patch: 0x0006
                 patch = regs[0] >> 8
-                # FW Maj/Min: 0x0007
                 major = regs[1] >> 8
                 minor = regs[1] & 0xFF
                 data["firmware_version"] = f"{major}.{minor}.{patch}"
                 
-                # Hardware Type 0x000E (index 8 in slice)
                 hw_type_map = {1: "P4", 2: "P51/PM51", 3: "P52"}
                 hw_val = regs[8]
                 data["model"] = hw_type_map.get(hw_val, f"Unknown ({hw_val})")
                 
-                # Serial 0x0020 (Length 16)
                 rr_serial = await self._read_registers_safe("read_input_registers", 32, 16)
                 if not rr_serial.isError():
                     data["serial_number"] = self._decode_string(rr_serial.registers)
                 
             # --- READ CHARGE POINT 1 REGISTERS (Base 0x1000) ---
-            
-            # CP Holding
             rr_cp_hold = await self._read_registers_safe("read_holding_registers", 0x1000, 1)
             if not rr_cp_hold.isError():
                 data["cp_max_power"] = rr_cp_hold.registers[0]
 
-            # CP Inputs (0x1001 start)
             rr_cp_input = await self._read_registers_safe("read_input_registers", 0x1001, 26)
             if not rr_cp_input.isError():
                 regs = rr_cp_input.registers
                 data["status_word"] = regs[0]
-                data["current_power"] = regs[1] * 100 # 100W steps -> Watts
+                data["current_power"] = regs[1] * 100 
                 data["current_l1"] = regs[2] * 0.1
                 data["current_l2"] = regs[3] * 0.1
                 data["current_l3"] = regs[4] * 0.1
-                data["energy_total"] = regs[7] * 0.1 # 100Wh steps -> kWh
+                data["energy_total"] = regs[7] * 0.1
                 data["status_code"] = regs[11]
                 data["voltage_l1"] = regs[12]
                 data["voltage_l2"] = regs[13]
@@ -135,7 +138,6 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                 rfid_regs = regs[15:25]
                 data["rfid_tag"] = self._decode_string(rfid_regs)
 
-            # Store device info
             if "serial_number" in data:
                 self.device_info_map = {
                     "identifiers": {(DOMAIN, data["serial_number"])},

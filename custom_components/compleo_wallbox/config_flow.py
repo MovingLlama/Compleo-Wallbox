@@ -32,7 +32,6 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            # Eingabe bereinigen
             host = user_input[CONF_HOST].strip()
             if host.startswith("http://"):
                 host = host[7:]
@@ -42,24 +41,26 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             user_input[CONF_HOST] = host
             port = user_input[CONF_PORT]
 
-            # Validate connection
             client = AsyncModbusTcpClient(host, port=port)
             try:
                 await client.connect()
                 if not client.connected:
                     errors["base"] = "cannot_connect"
                 else:
-                    # Try reading with 'slave', fallback to 'unit' if TypeError occurs
-                    try:
-                        rr = await client.read_input_registers(0x000E, 1, slave=1)
-                    except TypeError:
-                        # Fallback for pymodbus versions using 'unit' instead of 'slave'
-                        rr = await client.read_input_registers(0x000E, 1, unit=1)
+                    # Parameter-Check für verschiedene Pymodbus Versionen
+                    rr = None
+                    for param in ["device_id", "slave", "unit"]:
+                        try:
+                            kwargs = {param: 1}
+                            rr = await client.read_input_registers(0x000E, 1, **kwargs)
+                            break
+                        except TypeError:
+                            continue
                     
                     client.close()
                     
-                    if rr.isError():
-                         _LOGGER.warning("Connected to %s but failed to read register: %s", host, rr)
+                    if rr is None or rr.isError():
+                         _LOGGER.warning("Connected but failed to read register during setup at %s", host)
                     
                     await self.async_set_unique_id(f"{host}:{port}")
                     self._abort_if_unique_id_configured()

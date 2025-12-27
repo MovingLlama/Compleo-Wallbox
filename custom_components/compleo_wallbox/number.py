@@ -17,10 +17,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Compleo numbers."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    
-    async_add_entities([
-        CompleoPowerLimit(coordinator)
-    ])
+    async_add_entities([CompleoPowerLimit(coordinator)])
 
 
 class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
@@ -43,9 +40,7 @@ class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
     def native_value(self):
         """Return the current value."""
         raw = self.coordinator.data.get("power_setpoint_abs")
-        if raw is not None:
-            return raw * 100
-        return None
+        return raw * 100 if raw is not None else None
 
     @property
     def device_info(self):
@@ -55,13 +50,10 @@ class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         """Update the current value."""
         modbus_val = int(value / 100)
-        
         try:
-            try:
-                await self.coordinator.client.write_register(0x0000, modbus_val, slave=1)
-            except TypeError:
-                await self.coordinator.client.write_register(0x0000, modbus_val, unit=1)
-                
+            # Nutzt den erkannten Parameter (device_id, slave oder unit)
+            param = self.coordinator._param_name or "slave"
+            await self.coordinator.client.write_register(0x0000, modbus_val, **{param: 1})
             await self.coordinator.async_request_refresh()
         except Exception as err:
             self.coordinator.logger.error("Error writing power limit: %s", err)
