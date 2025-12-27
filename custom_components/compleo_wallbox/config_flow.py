@@ -48,12 +48,10 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if not connected:
                     errors["base"] = "cannot_connect"
                 else:
-                    # Wir versuchen die Firmware (Reg 0x0006) zu lesen, um die Kommunikation zu testen
-                    # Das ist zuverlässiger als das Holding-Register 0x0000
                     success = False
                     for param in ["slave", "unit", "device_id"]:
                         try:
-                            # 0x0006 ist laut Handbuch die Firmware (Input Register)
+                            # 0x0006 ist die Firmware (Input Register)
                             rr = await client.read_input_registers(0x0006, 1, **{param: 1})
                             if rr is not None and not rr.isError():
                                 success = True
@@ -63,7 +61,6 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     
                     if not success:
                         _LOGGER.warning("Modbus connection established but registers could not be read. Check Slave ID or Firewall.")
-                        # Wir lassen es trotzdem zu, da manche Boxen nach dem Booten Zeit brauchen
                     
                     await self.async_set_unique_id(f"{host}_{port}")
                     self._abort_if_unique_id_configured()
@@ -76,7 +73,8 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception in config flow")
                 errors["base"] = "cannot_connect"
             finally:
-                await client.close()
+                # Korrektur: close() ist bei AsyncModbusTcpClient keine awaitable Methode
+                client.close()
 
         return self.async_show_form(
             step_id="user", data_schema=DATA_SCHEMA, errors=errors
