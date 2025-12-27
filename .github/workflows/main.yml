@@ -13,6 +13,7 @@ jobs:
     permissions:
       contents: write # Wichtig: Schreibrechte für Releases UND Repository
     
+      
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
