@@ -32,7 +32,18 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            host = user_input[CONF_HOST]
+            # Eingabe bereinigen: Leerzeichen entfernen
+            host = user_input[CONF_HOST].strip()
+            
+            # Falls versehentlich http:// oder https:// eingegeben wurde, entfernen
+            if host.startswith("http://"):
+                host = host[7:]
+            elif host.startswith("https://"):
+                host = host[8:]
+            
+            # Bereinigten Host zurückschreiben für die Speicherung
+            user_input[CONF_HOST] = host
+            
             port = user_input[CONF_PORT]
 
             # Validate connection
@@ -40,6 +51,7 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             try:
                 await client.connect()
                 if not client.connected:
+                    # Wenn pymodbus keine Verbindung aufbauen kann
                     errors["base"] = "cannot_connect"
                 else:
                     # Connection successful, try to read a register to verify (e.g., HW Type at 0x000E)
@@ -48,10 +60,7 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     client.close()
                     
                     if rr.isError():
-                         # Even if read fails, if connection worked, we might proceed, 
-                         # but let's assume it's not the right device if we can't read.
-                         _LOGGER.warning("Connected but failed to read register: %s", rr)
-                         # We allow it but warn, or fail. Let's proceed to allow debugging.
+                         _LOGGER.warning("Connected to %s but failed to read register: %s", host, rr)
                     
                     await self.async_set_unique_id(f"{host}:{port}")
                     self._abort_if_unique_id_configured()
@@ -61,7 +70,10 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         data=user_input
                     )
             except Exception:
+                _LOGGER.exception("Unexpected exception in config flow")
                 errors["base"] = "cannot_connect"
+            finally:
+                # Sicherstellen, dass der Client geschlossen wird
                 client.close()
 
         return self.async_show_form(
