@@ -2,19 +2,36 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connect to Compleo Solo",
+        "title": "Connect to Compleo Wallbox",
         "data": {
           "host": "IP Address",
-          "port": "Port (Default 502)",
-          "scan_interval": "Update Interval (Seconds)"
+          "port": "Port (Default 502)"
         }
       }
     },
     "error": {
-      "cannot_connect": "Failed to connect"
+      "cannot_connect": "Failed to connect",
+      "unknown": "Unexpected error"
     },
     "abort": {
       "already_configured": "Device is already configured"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status_code": {
+        "state": {
+          "0": "Available",
+          "1": "Preparing",
+          "2": "Charging",
+          "3": "Suspended EVSE",
+          "4": "Suspended EV",
+          "5": "Finishing",
+          "6": "Reserved",
+          "7": "Unavailable",
+          "8": "Faulted"
+        }
+      }
     }
   }
 }

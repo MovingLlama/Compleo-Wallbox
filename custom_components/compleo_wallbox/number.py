@@ -1,40 +1,69 @@
-"""Number entities for Compleo Solo."""
+"""Support for Compleo Wallbox number settings."""
+from __future__ import annotations
+
 from homeassistant.components.number import NumberEntity, NumberDeviceClass
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfPower
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, REG_POWER_ABS_SETPOINT
+from .const import DOMAIN
 
-async def async_setup_entry(hass, entry, async_add_entities):
-    """Set up number entities."""
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up the Compleo numbers."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([CompleoPowerLimit(coordinator)])
+    
+    # Register 0x0000: Power Setpoint Absolute (100W steps)
+    async_add_entities([
+        CompleoPowerLimit(coordinator)
+    ])
+
 
 class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
-    """Control Power Limit (Absolute)."""
+    """Representation of the Charging Power Limit."""
+
+    _attr_name = "Charging Power Limit"
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_device_class = NumberDeviceClass.POWER
+    _attr_native_min_value = 0
+    # Assuming max 22kW (22000W) or 11kW. Let's safe default 22000.
+    _attr_native_max_value = 22000 
+    _attr_native_step = 100
+    _attr_icon = "mdi:speedometer"
 
     def __init__(self, coordinator):
+        """Initialize."""
         super().__init__(coordinator)
-        self._attr_name = "Compleo Power Limit"
         self._attr_unique_id = f"{coordinator.host}_power_limit"
-        self._attr_native_unit_of_measurement = UnitOfPower.WATT
-        self._attr_device_class = NumberDeviceClass.POWER
-        # Assuming 11kW max, 6A (4140W) min usually, but allowing 0 to max
-        self._attr_native_min_value = 0
-        self._attr_native_max_value = 22000 # 22kW max safety
-        self._attr_native_step = 100
 
     @property
     def native_value(self):
         """Return the current value."""
-        return self.coordinator.data.get("power_setpoint")
+        # Modbus value is in 100W steps. Convert to W for HA.
+        raw = self.coordinator.data.get("power_setpoint_abs")
+        if raw is not None:
+            return raw * 100
+        return None
+
+    @property
+    def device_info(self):
+        """Return device info."""
+        return self.coordinator.device_info_map
 
     async def async_set_native_value(self, value: float) -> None:
         """Update the current value."""
-        # Convert Watts to 100W steps (Integer)
-        # 1000W -> 10
-        val_int = int(value / 100)
-        await self.coordinator.async_write_register(REG_POWER_ABS_SETPOINT, val_int)
-        # Update local state immediately for responsiveness
-        self.coordinator.data["power_setpoint"] = val_int * 100
-        self.async_write_ha_state()
+        # Convert W back to 100W steps
+        modbus_val = int(value / 100)
+        
+        # Write to Register 0x0000
+        # Note: We must use the client from the coordinator
+        try:
+            await self.coordinator.client.write_register(0x0000, modbus_val, slave=1)
+            await self.coordinator.async_request_refresh()
+        except Exception as err:
+            self.coordinator.logger.error("Error writing power limit: %s", err)

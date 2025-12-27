@@ -2,19 +2,36 @@
   "config": {
     "step": {
       "user": {
-        "title": "Verbindung zur Compleo Solo",
+        "title": "Verbindung zur Compleo Wallbox",
         "data": {
           "host": "IP-Adresse",
-          "port": "Port (Standard 502)",
-          "scan_interval": "Aktualisierungsintervall (Sekunden)"
+          "port": "Port (Standard 502)"
         }
       }
     },
     "error": {
-      "cannot_connect": "Verbindung fehlgeschlagen"
+      "cannot_connect": "Verbindung fehlgeschlagen",
+      "unknown": "Unerwarteter Fehler"
     },
     "abort": {
       "already_configured": "Gerät ist bereits konfiguriert"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "status_code": {
+        "state": {
+          "0": "Verfügbar",
+          "1": "Vorbereitung",
+          "2": "Lädt",
+          "3": "Pausiert (EVSE)",
+          "4": "Pausiert (EV)",
+          "5": "Abschließen",
+          "6": "Reserviert",
+          "7": "Nicht verfügbar",
+          "8": "Fehler"
+        }
+      }
     }
   }
 }

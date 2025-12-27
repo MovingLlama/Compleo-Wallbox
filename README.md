@@ -1,70 +1,62 @@
-# **Compleo Wallbox Integration für Home Assistant**
+# **Compleo Wallbox Home Assistant Integration**
 
-Eine Home Assistant custom\_component zur lokalen Steuerung und Überwachung von Compleo Ladestationen (z.B. Compleo Solo, eBOX Professional) über **Modbus TCP**.
+Integration für **Compleo Solo** und kompatible Ladestationen über **Modbus TCP**.
 
-Diese Integration ermöglicht es dir, deine Wallbox direkt in Home Assistant einzubinden – ganz ohne Cloud, mit direkter lokaler Kommunikation.
+Diese Integration liest Status, Energie, Spannung und Ströme aus der Wallbox und ermöglicht das Setzen der Ladeleistung.
 
-## **✨ Features**
+## **Funktionen**
 
-* **Überwachung:**  
-  * Aktuelle Ladeleistung (W)  
-  * Gesamtenergieverbrauch (kWh)  
-  * Spannung & Stromstärke pro Phase (L1, L2, L3)  
-  * Status der Wallbox (Bereit, Lädt, Fehler, etc.)  
-  * Detaillierte Fehlercodes  
-  * Temperatur-Derating Status  
-* **Steuerung:**  
-  * **Ladeleistung begrenzen:** Setze das Limit in Watt direkt über einen Schieberegler.  
-  * **Phasen-Umschaltung:** Wechsle zwischen Automatisch, 1-Phasig und 3-Phasig (sofern von der Hardware unterstützt).
+* 🔌 **Echtzeit-Werte:** Aktuelle Leistung, Gesamtenergie (kWh), Spannungen (L1/L2/L3), Ströme.  
+* 🚦 **Status:** Anzeige des aktuellen Status (Lädt, Verfügbar, Fehler, etc.) basierend auf OCPP Status Codes.  
+* ⚡ **Steuerung:** Setzen der maximalen Ladeleistung (in Watt) über eine Number-Entity.  
+* 🆔 **Erkennung:** Automatische Erkennung von Modell, Seriennummer und Firmware-Version.  
+* 🏷️ **RFID:** Anzeige des letzten RFID Tags.
 
-## **🚀 Installation**
+## **Voraussetzungen**
 
-### **Option 1: Via HACS (Empfohlen)**
+1. Die Wallbox muss im gleichen Netzwerk wie Home Assistant sein.  
+2. **Modbus TCP** muss auf der Wallbox aktiviert sein (Standardport 502).
 
-1. Öffne HACS in deinem Home Assistant.  
-2. Klicke oben rechts auf die drei Punkte ... \-\> **Benutzerdefinierte Repositories**.  
-3. Füge die URL dieses Repositories hinzu: https://github.com/MovingLlama/compleo\_wallbox  
-4. Wähle als Kategorie **Integration**.  
-5. Klicke auf **Hinzufügen** und suche dann nach "Compleo Wallbox" in der HACS-Liste, um es zu installieren.  
-6. Starte Home Assistant neu.
+## **Installation**
 
-### **Option 2: Manuell**
+### **Via HACS (Empfohlen)**
 
-1. Lade die neueste Version aus den [Releases](https://www.google.com/search?q=https://github.com/MovingLlama/compleo_wallbox/releases) herunter.  
-2. Entpacke die ZIP-Datei.  
-3. Kopiere den Ordner compleo\_wallbox in dein Home Assistant Verzeichnis unter /config/custom\_components/.  
-4. Starte Home Assistant neu.
+1. Füge dieses Repository als "Custom Repository" in HACS hinzu:  
+   * URL: https://github.com/MovingLlama/Compleo-Wallbox  
+   * Typ: Integration  
+2. Suche nach "Compleo Wallbox" und installiere es.  
+3. Starte Home Assistant neu.
 
-## **⚙️ Konfiguration**
+### **Manuell**
 
-1. Gehe in Home Assistant zu **Einstellungen** \-\> **Geräte & Dienste**.  
-2. Klicke unten rechts auf **Integration hinzufügen**.  
+1. Lade den Ordner custom\_components/compleo\_wallbox in dein Home Assistant custom\_components Verzeichnis.  
+2. Starte Home Assistant neu.
+
+## **Konfiguration**
+
+1. Gehe zu **Einstellungen** \-\> **Geräte & Dienste**.  
+2. Klicke auf **Integration hinzufügen**.  
 3. Suche nach **Compleo Wallbox**.  
-4. Gib die **IP-Adresse** deiner Wallbox ein.  
-   * **Port:** Standard ist 502\.  
-   * **Update Intervall:** Wie oft Daten abgerufen werden sollen (Standard: 30 Sekunden).
+4. Gib die **IP-Adresse** deiner Wallbox und den **Port** (Standard 502\) ein.
 
-### **Voraussetzungen an der Wallbox**
+## **Entitäten**
 
-* Die Wallbox muss im gleichen Netzwerk wie Home Assistant sein.  
-* **Modbus TCP** muss aktiviert sein (bei manchen Modellen standardmäßig an, bei anderen muss es über das Webinterface oder DIP-Schalter aktiviert werden).
+| Entität | Beschreibung |
+| :---- | :---- |
+| sensor.compleo\_wallbox\_status | Aktueller OCPP Status (z.B. Lädt, Verfügbar) |
+| sensor.compleo\_wallbox\_current\_power | Aktuelle Ladeleistung in Watt |
+| sensor.compleo\_wallbox\_total\_energy | Geladene Energie (Gesamt) in kWh |
+| number.compleo\_wallbox\_charging\_power\_limit | Schieberegler für Leistungslimit (Register 0x0000) |
+| sensor.compleo\_wallbox\_last\_rfid | Zuletzt genutzter RFID Tag |
+| ... | Spannungen und Ströme pro Phase |
 
-## **📊 Entitäten**
+## **Kompatibilität**
 
-Nach der Einrichtung stehen dir folgende Entitäten zur Verfügung:
+Getestet mit:
 
-| Entität | Typ | Beschreibung |
-| :---- | :---- | :---- |
-| sensor.compleo\_status | Sensor | Aktueller Status (Charging, Available...) |
-| sensor.compleo\_power | Sensor | Aktuelle Leistung in Watt |
-| sensor.compleo\_energy\_charged | Sensor | Gesamtzähler in kWh |
-| number.compleo\_power\_limit | Number | Schieberegler für das Ladelimit (Watt) |
-| select.compleo\_phase\_mode | Select | Moduswahl (Auto/1-Phasig/3-Phasig) |
+* Compleo Solo (Modbus Register v16)  
+* Andere Compleo Modelle mit gleicher Registermap (P4, P51, P52 Hardware)
 
-... und viele weitere Sensoren für Spannung und Strom pro Phase.
+## **Lizenz**
 
-## **⚠️ Disclaimer**
-
-Dies ist keine offizielle Software der Compleo Charging Solutions GmbH. Die Nutzung erfolgt auf eigene Gefahr.
-
-Entwickelt von [MovingLlama](https://www.google.com/search?q=https://github.com/MovingLlama)
+MIT
