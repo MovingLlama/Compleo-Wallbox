@@ -11,5 +11,5 @@
       "type": "_compleo-ccs._tcp.local."
     }
   ],
-  "requirements": ["pymodbus==3.8.2"]
+  "requirements": ["pymodbus>=3.8.2"]
 }
