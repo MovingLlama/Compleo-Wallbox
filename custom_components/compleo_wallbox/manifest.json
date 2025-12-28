@@ -1,11 +1,15 @@
 {
   "domain": "compleo_wallbox",
   "name": "Compleo Wallbox",
-  "codeowners": ["@MovingLlama"],
+  "codeowners": ["@movingllama"],
   "config_flow": true,
-  "documentation": "https://github.com/MovingLlama/Compleo-Wallbox",
+  "documentation": "https://github.com/movingllama/Compleo-Wallbox",
   "iot_class": "local_polling",
-  "issue_tracker": "https://github.com/MovingLlama/Compleo-Wallbox/issues",
-  "requirements": ["pymodbus>=3.0.0"],
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "zeroconf": [
+    {
+      "type": "_compleo-ccs._tcp.local."
+    }
+  ],
+  "requirements": ["pymodbus==3.8.2"]
 }

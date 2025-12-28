@@ -26,8 +26,6 @@ async def async_setup_entry(
 ) -> None:
     """Set up the Compleo sensors."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
-    
-    # Prefix for unique IDs to avoid collisions
     uid_prefix = entry.unique_id or coordinator.host
 
     sensors = [
@@ -40,26 +38,13 @@ async def async_setup_entry(
         CompleoSensor(coordinator, uid_prefix, "current_l2", "Current L2", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
         CompleoSensor(coordinator, uid_prefix, "current_l3", "Current L3", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
         CompleoSensor(coordinator, uid_prefix, "status_code", "Status", None, SensorDeviceClass.ENUM, None, icon="mdi:ev-station"),
-        CompleoSensor(coordinator, uid_prefix, "rfid_tag", "Last RFID", None, None, None, icon="mdi:card-account-details"),
     ]
-
     async_add_entities(sensors)
-
 
 class CompleoSensor(CoordinatorEntity, SensorEntity):
     """Representation of a Compleo Sensor."""
 
-    def __init__(
-        self, 
-        coordinator,
-        uid_prefix,
-        key, 
-        name, 
-        unit=None, 
-        device_class=None, 
-        state_class=None,
-        icon=None
-    ):
+    def __init__(self, coordinator, uid_prefix, key, name, unit=None, device_class=None, state_class=None, icon=None):
         """Initialize."""
         super().__init__(coordinator)
         self._key = key
@@ -73,7 +58,6 @@ class CompleoSensor(CoordinatorEntity, SensorEntity):
         
         if key == "status_code":
             self._attr_translation_key = "status_code"
-            # Definition der Optionen für Enum-Klasse
             self._attr_options = ["0", "1", "2", "3", "4", "5", "6", "7", "8"]
 
     @property

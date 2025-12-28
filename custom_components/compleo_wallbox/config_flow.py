@@ -9,6 +9,7 @@ import voluptuous as vol
 from pymodbus.client import AsyncModbusTcpClient
 
 from homeassistant import config_entries
+from homeassistant.components import zeroconf
 from homeassistant.const import CONF_HOST, CONF_PORT, CONF_NAME
 from homeassistant.data_entry_flow import FlowResult
 
@@ -16,16 +17,65 @@ from .const import DOMAIN, DEFAULT_PORT, DEFAULT_NAME
 
 _LOGGER = logging.getLogger(__name__)
 
-DATA_SCHEMA = vol.Schema({
-    vol.Required(CONF_NAME, default=DEFAULT_NAME): str,
-    vol.Required(CONF_HOST): str,
-    vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
-})
-
 class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Compleo Wallbox."""
 
     VERSION = 1
+
+    def __init__(self) -> None:
+        """Initialize flow."""
+        self._discovery_info: dict[str, Any] = {}
+
+    async def async_step_zeroconf(
+        self, discovery_info: zeroconf.ZeroconfServiceInfo
+    ) -> FlowResult:
+        """Handle zeroconf discovery."""
+        host = discovery_info.host
+        port = DEFAULT_PORT # Modbus ist meist 502, nicht der Web-Port 80 aus Zeroconf
+        
+        # Extrahiere Infos aus TXT Records
+        # Beispiel: "CCS-Hardware-Info=board[P51]..."
+        properties = discovery_info.properties
+        model = properties.get("CCS-Hardware-Info", "Unknown").split(",")[0].replace("board[", "").replace("]", "")
+        version = properties.get("CCS-Version", "Unknown")
+        
+        name = f"Compleo {model}" if model != "Unknown" else DEFAULT_NAME
+        
+        await self.async_set_unique_id(f"{host}_{port}")
+        self._abort_if_unique_id_configured()
+
+        self._discovery_info = {
+            CONF_HOST: host,
+            CONF_PORT: port,
+            CONF_NAME: name,
+        }
+
+        self.context.update({
+            "title_placeholders": {"name": name}
+        })
+
+        return await self.async_step_discovery_confirm()
+
+    async def async_step_discovery_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Confirm discovery."""
+        if user_input is not None:
+            return await self.async_step_user(user_input={
+                **self._discovery_info,
+                CONF_NAME: user_input.get(CONF_NAME, self._discovery_info[CONF_NAME])
+            })
+
+        return self.async_show_form(
+            step_id="discovery_confirm",
+            data_schema=vol.Schema({
+                vol.Required(CONF_NAME, default=self._discovery_info[CONF_NAME]): str,
+            }),
+            description_placeholders={
+                "host": self._discovery_info[CONF_HOST],
+                "name": self._discovery_info[CONF_NAME]
+            }
+        )
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -48,32 +98,10 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if not connected:
                     errors["base"] = "cannot_connect"
                 else:
-                    # Kurze Pause, da manche Modbus-Stacks Zeit nach dem Connect brauchen
                     await asyncio.sleep(1)
                     
-                    success = False
-                    # Wir testen verschiedene Slave-IDs, da Compleo-Modelle variieren können
-                    for slave_id in [1, 255, 0]:
-                        for param in ["slave", "unit", "device_id"]:
-                            try:
-                                # Teste Firmware-Register (0x0006)
-                                rr = await client.read_input_registers(0x0006, 1, **{param: slave_id})
-                                if rr is not None and not rr.isError():
-                                    success = True
-                                    _LOGGER.info("Successfully communicated with Slave ID %s using %s", slave_id, param)
-                                    break
-                            except Exception:
-                                continue
-                        if success:
-                            break
-                    
-                    if not success:
-                        _LOGGER.warning(
-                            "Modbus connection to %s established, but could not read registers. "
-                            "Will proceed anyway, but sensors might be unavailable initially.", 
-                            host
-                        )
-                    
+                    # Verifizierungstest (optional, da wir via Zeroconf wissen, dass sie da ist)
+                    # Wir gehen hier direkt zum Erfolg, um Multihost-Probleme beim Setup zu umgehen
                     await self.async_set_unique_id(f"{host}_{port}")
                     self._abort_if_unique_id_configured()
 
@@ -88,5 +116,11 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 client.close()
 
         return self.async_show_form(
-            step_id="user", data_schema=DATA_SCHEMA, errors=errors
+            step_id="user",
+            data_schema=vol.Schema({
+                vol.Required(CONF_NAME, default=DEFAULT_NAME): str,
+                vol.Required(CONF_HOST): str,
+                vol.Required(CONF_PORT, default=DEFAULT_PORT): int,
+            }),
+            errors=errors
         )
