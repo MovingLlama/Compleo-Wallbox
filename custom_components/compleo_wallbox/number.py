@@ -27,14 +27,12 @@ async def async_setup_entry(
     
     # 1. Global Station Power Limit
     entities.append(CompleoStationLimit(coordinator, uid_prefix))
-    
-    # Note: Point limit removed as Register 0x1009 is Phase Mode (Select)
         
     async_add_entities(entities)
 
 
 class CompleoStationLimit(CoordinatorEntity, NumberEntity):
-    """Global Charging Power Limit (0x0000)."""
+    """Global Charging Power Limit (0x0001)."""
 
     _attr_has_entity_name = True
     _attr_name = "Station Power Limit"
@@ -66,7 +64,8 @@ class CompleoStationLimit(CoordinatorEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         modbus_val = int(value / 100)
-        await self._write_register(0x0000, modbus_val)
+        # Adjusted +1: 0x0000 -> 0x0001
+        await self._write_register(0x0001, modbus_val)
 
     async def _write_register(self, address, value):
         try:

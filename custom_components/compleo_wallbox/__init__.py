@@ -109,8 +109,10 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         base_address = index * 0x1000
         data = {}
 
-        # --- Block 1 (Inputs 0xX001 - 0xX008) ---
-        start_addr_1 = base_address + 0x001
+        # --- Block 1 (Inputs) ---
+        # Adjusted +1 for 1-based addressing
+        # Old: 0xX001 -> New: 0xX002
+        start_addr_1 = base_address + 0x002
         rr_block1 = await self._read_registers_safe("read_input_registers", start_addr_1, 8)
         
         if not rr_block1 or rr_block1.isError():
@@ -124,18 +126,17 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         data["current_l3"] = regs[4] * 0.1
         data["energy_total"] = regs[7] * 0.1  # kWh
 
-        # --- Block 2 (Inputs 0xX00A - 0xX00F) ---
-        # 0xX00A: Phase Switch Count (Offset 10)
-        # 0xX00C: Status Code (Offset 12)
-        # 0xX00D-F: Voltages
-        start_addr_2 = base_address + 0x00A
+        # --- Block 2 (Inputs) ---
+        # Adjusted +1 for 1-based addressing
+        # Old: 0xX00A -> New: 0xX00B
+        start_addr_2 = base_address + 0x00B
         rr_block2 = await self._read_registers_safe("read_input_registers", start_addr_2, 6)
         
         if rr_block2 and not rr_block2.isError():
             regs = rr_block2.registers
-            data["phase_switch_count"] = regs[0] # 0xX00A
-            # regs[1] is 0xX00B (unused/error?)
-            data["status_code"] = regs[2]        # 0xX00C
+            data["phase_switch_count"] = regs[0] # New 0xX00B (Old 0xX00A offset)
+            # regs[1] -> 0xX00C (was 0xX00B)
+            data["status_code"] = regs[2]        # New 0xX00D (Old 0xX00C Status)
             data["voltage_l1"] = regs[3]
             data["voltage_l2"] = regs[4]
             data["voltage_l3"] = regs[5]
@@ -143,8 +144,9 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             data.update({"status_code": 0, "voltage_l1": 0, "voltage_l2": 0, "voltage_l3": 0})
             
         # --- Point Holding Registers (Phase Mode) ---
-        # 0xX009 (Offset 9) = Phase Mode (Senken-Modus)
-        addr_hold = base_address + 0x009
+        # Adjusted +1 for 1-based addressing
+        # Old: 0xX009 -> New: 0xX00A
+        addr_hold = base_address + 0x00A
         rr_hold = await self._read_registers_safe("read_holding_registers", addr_hold, 1)
         if rr_hold and not rr_hold.isError():
             data["phase_mode"] = rr_hold.registers[0]
@@ -157,15 +159,16 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             new_data = {"system": {}, "points": {}}
             
             # --- 0. Connection Probe & Global Settings ---
-            # Using 0x0000 (Holding)
-            rr_hold = await self._read_registers_safe("read_holding_registers", 0x0000, 1)
+            # Adjusted +1: 0x0000 -> 0x0001
+            rr_hold = await self._read_registers_safe("read_holding_registers", 0x0001, 1)
             if rr_hold and not rr_hold.isError():
                 new_data["system"]["power_setpoint_abs"] = rr_hold.registers[0]
             else:
-                 raise UpdateFailed("Could not read Global Register 0x0000. Connection failed.")
+                 raise UpdateFailed("Could not read Global Register 0x0001. Connection failed.")
 
             # --- 1. System Info ---
-            rr_sys = await self._read_registers_safe("read_input_registers", 0x0006, 2)
+            # Adjusted +1: 0x0006 -> 0x0007
+            rr_sys = await self._read_registers_safe("read_input_registers", 0x0007, 2)
             if rr_sys and not rr_sys.isError():
                 major = rr_sys.registers[1] >> 8
                 minor = rr_sys.registers[1] & 0xFF
