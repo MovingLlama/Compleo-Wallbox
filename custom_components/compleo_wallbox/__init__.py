@@ -57,8 +57,9 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         self.client = AsyncModbusTcpClient(host, port=port, timeout=5)
         self.device_name = name
         self.device_info_map = {} 
-        # Stores the name of the working strategy (e.g. "slave_kw", "no_unit_cnt_kw")
         self._strategy_name = None
+        # Track if we found LP1 at 0x1000 or 0x0000
+        self._lp_base_offset = None 
         
         super().__init__(
             hass,
@@ -74,38 +75,23 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _read_registers_safe(self, func_name, address, count, slave_id=1):
         """Helper to call Modbus read functions trying multiple signatures."""
-        
-        # 1. Ensure Connection
         if not self.client.connected:
             await self.client.connect()
             await asyncio.sleep(0.2)
 
         func = getattr(self.client, func_name)
         
-        # Define strategies: (name, args_list, kwargs_dict)
         strategies = []
-        
-        # Group A: Positional Count (Standard)
-        # 1. slave keyword
+        # Group A: Positional Count
         strategies.append(("slave_pos_cnt", [address, count], {"slave": slave_id}))
-        # 2. unit keyword
         strategies.append(("unit_pos_cnt", [address, count], {"unit": slave_id}))
-        # 3. No ID (Fallback)
         strategies.append(("no_unit_pos_cnt", [address, count], {}))
         
-        # Group B: Keyword Count (For strict signatures causing "takes 2 but 3 given")
-        # 4. slave keyword, count keyword
+        # Group B: Keyword Count (Fix for 'takes 2 but 3 given')
         strategies.append(("slave_kw_cnt", [address], {"count": count, "slave": slave_id}))
-        # 5. unit keyword, count keyword
         strategies.append(("unit_kw_cnt", [address], {"count": count, "unit": slave_id}))
-        # 6. No ID, count keyword
         strategies.append(("no_unit_kw_cnt", [address], {"count": count}))
         
-        # Group C: Positional ID (Old pymodbus)
-        # 7. Positional ID
-        strategies.append(("pos_all", [address, count, slave_id], {}))
-        
-        # Optimization: Try the last successful strategy first
         if self._strategy_name:
              for i, (name, _, _) in enumerate(strategies):
                  if name == self._strategy_name:
@@ -113,91 +99,110 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                      break
 
         last_error = None
-
         for name, args, kwargs in strategies:
             try:
-                # Execute strategy
                 result = await func(*args, **kwargs)
                 
-                # Check for functional failure (Timeout/Modbus Exception)
                 if result is None or (hasattr(result, 'isError') and result.isError()):
-                    # The call signature was accepted, but the device didn't reply correctly.
-                    # We accept this as the "correct" strategy but failed communication.
-                    
-                    # Log debug info but don't spam warning unless it's the strategy we thought worked
+                    # Functional error (device responded with error or timeout)
+                    # This implies the args were accepted.
                     if self._strategy_name == name or not self._strategy_name:
-                         if result is None:
-                             _LOGGER.debug("Read None (Timeout?) with strategy '%s' at 0x%04x", name, address)
-                         else:
-                             _LOGGER.debug("Modbus Error with strategy '%s' at 0x%04x: %s", name, address, result)
-                    
+                         pass # Debug logging skipped to reduce noise
                     return result
 
-                # Check if we got the expected number of registers
-                # (Prevents "list index out of range" if device returns partial data)
+                # Check register count to prevent "list index out of range"
                 if hasattr(result, 'registers') and len(result.registers) < count:
-                    _LOGGER.debug("Strategy '%s' returned fewer registers (%d) than requested (%d)", 
-                                  name, len(result.registers), count)
-                    # Treat as failure for this strategy
+                    _LOGGER.debug("Strategy '%s' returned %d regs, expected %d", name, len(result.registers), count)
                     continue
 
-                # Success!
                 self._strategy_name = name
                 return result
 
-            except TypeError as te:
-                # Signature mismatch (unexpected keyword, wrong arg count)
-                # This is normal during discovery
-                last_error = te
+            except TypeError:
                 continue
-                
             except Exception as e:
-                # Other errors (connection lost, etc)
-                _LOGGER.warning("Exception reading 0x%04x with strategy '%s': %s", address, name, e)
                 last_error = e
                 continue
 
-        _LOGGER.error("Failed to read 0x%04x. All strategies failed. Last error: %s", address, last_error)
+        _LOGGER.debug("Failed to read 0x%04x. Last error: %s", address, last_error)
+        return None
+
+    async def _read_string(self, address, count) -> str | None:
+        """Helper to read a string from registers."""
+        rr = await self._read_registers_safe("read_input_registers", address, count)
+        if rr and not (hasattr(rr, 'isError') and rr.isError()) and len(rr.registers) == count:
+            try:
+                # Convert registers to string (2 chars per register)
+                s = b""
+                for reg in rr.registers:
+                    s += reg.to_bytes(2, 'big')
+                return s.decode('ascii').rstrip('\x00').strip()
+            except Exception:
+                pass
         return None
 
     async def _read_charging_point_data(self, index: int) -> dict | None:
-        """Read data for a specific charging point (1 or 2)."""
+        """Read data for a specific charging point."""
+        
+        # Determine Base Address
+        # If we haven't determined the map yet, try 0x1000 first, then 0x0000 (for LP1)
         base_address = index * 0x1000
+        
+        if index == 1 and self._lp_base_offset == 0:
+            base_address = 0x0000
+        
         data = {}
 
-        # Offset 1 (0xX001) for Status Word
+        # --- Block 1: Status/Power/Energy ---
+        # Try reading at offset 1
+        # If base is 0x0000, 0x0001 might overlap with Holding 0x0001 (Limit %)
+        # BUT Input and Holding are different memory areas.
         start_addr_1 = base_address + 0x001
+        
         rr_block1 = await self._read_registers_safe("read_input_registers", start_addr_1, 8)
         
+        # FALLBACK DETECTION (Only for LP1)
+        if (not rr_block1 or (hasattr(rr_block1, 'isError') and rr_block1.isError())) and index == 1 and self._lp_base_offset is None:
+            _LOGGER.debug("LP1 at 0x1000 failed, trying 0x0000 map...")
+            base_address = 0x0000
+            start_addr_1 = 0x0001
+            rr_block1 = await self._read_registers_safe("read_input_registers", start_addr_1, 8)
+            if rr_block1 and not (hasattr(rr_block1, 'isError') and rr_block1.isError()):
+                self._lp_base_offset = 0 # Remember that we are on a flat map
+                _LOGGER.info("Detected Compleo Legacy Map (Base 0x0000)")
+
         if not rr_block1 or (hasattr(rr_block1, 'isError') and rr_block1.isError()):
             return None
 
+        # Safe parsing
         regs = rr_block1.registers
-        data["status_word"] = regs[0]
-        data["current_power"] = regs[1] * 100 # W
-        data["current_l1"] = regs[2] * 0.1    # A
-        data["current_l2"] = regs[3] * 0.1
-        data["current_l3"] = regs[4] * 0.1
-        data["energy_total"] = regs[7] * 0.1  # kWh
+        if len(regs) >= 8:
+            data["status_word"] = regs[0]
+            data["current_power"] = regs[1] * 100 
+            data["current_l1"] = regs[2] * 0.1    
+            data["current_l2"] = regs[3] * 0.1
+            data["current_l3"] = regs[4] * 0.1
+            data["energy_total"] = regs[7] * 0.1  
 
-        # Offset A (0xX00A)
+        # --- Block 2: Voltages ---
         start_addr_2 = base_address + 0x00A
         rr_block2 = await self._read_registers_safe("read_input_registers", start_addr_2, 6)
         
+        data.update({"status_code": 0, "voltage_l1": 0, "voltage_l2": 0, "voltage_l3": 0})
+        
         if rr_block2 and not (hasattr(rr_block2, 'isError') and rr_block2.isError()):
             regs = rr_block2.registers
-            data["phase_switch_count"] = regs[0] # 0xX00A
-            data["status_code"] = regs[2]        # 0xX00C
-            data["voltage_l1"] = regs[3]         # 0xX00D
-            data["voltage_l2"] = regs[4]         # 0xX00E
-            data["voltage_l3"] = regs[5]         # 0xX00F
-        else:
-            data.update({"status_code": 0, "voltage_l1": 0, "voltage_l2": 0, "voltage_l3": 0})
-            
-        # Holding Register for Phase Mode (0xX009)
+            if len(regs) >= 6:
+                data["phase_switch_count"] = regs[0]
+                data["status_code"] = regs[2]
+                data["voltage_l1"] = regs[3]
+                data["voltage_l2"] = regs[4]
+                data["voltage_l3"] = regs[5]
+
+        # --- Phase Mode (Holding) ---
         addr_hold = base_address + 0x009
         rr_hold = await self._read_registers_safe("read_holding_registers", addr_hold, 1)
-        if rr_hold and not (hasattr(rr_hold, 'isError') and rr_hold.isError()):
+        if rr_hold and not (hasattr(rr_hold, 'isError') and rr_hold.isError()) and len(rr_hold.registers) > 0:
             data["phase_mode"] = rr_hold.registers[0]
 
         return data
@@ -207,50 +212,51 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         try:
             new_data = {"system": {}, "points": {}}
             
-            # --- 0. Connection Probe ---
-            # Using 0x0000 (Holding)
+            # 1. Global Limit (Probe) - 0x0000
             rr_hold = await self._read_registers_safe("read_holding_registers", 0x0000, 1)
-            
-            if rr_hold and not (hasattr(rr_hold, 'isError') and rr_hold.isError()):
+            if rr_hold and not (hasattr(rr_hold, 'isError') and rr_hold.isError()) and len(rr_hold.registers) > 0:
                 new_data["system"]["power_setpoint_abs"] = rr_hold.registers[0]
             else:
-                 # If probe fails, raise error to mark availability
                  raise UpdateFailed(f"Could not read Global Register 0x0000. Result: {rr_hold}")
 
-            # --- 1. System Info ---
-            # 0x0006
+            # 2. System Info (Firmware) - 0x0006 (2 regs)
             rr_sys = await self._read_registers_safe("read_input_registers", 0x0006, 2)
-            if rr_sys and not (hasattr(rr_sys, 'isError') and rr_sys.isError()):
+            if rr_sys and not (hasattr(rr_sys, 'isError') and rr_sys.isError()) and len(rr_sys.registers) >= 2:
+                # 0x0006: Patch, 0x0007: Major/Minor
+                patch = rr_sys.registers[0]
                 major = rr_sys.registers[1] >> 8
                 minor = rr_sys.registers[1] & 0xFF
-                patch = rr_sys.registers[0] >> 8
+                # Note: PDF says 0x0006 is "Patch << 8". 
+                # If reading 0x0006 gave a value like 0x0500 (1280), Patch is 5.
+                patch = patch >> 8 
                 new_data["system"]["firmware_version"] = f"{major}.{minor}.{patch}"
 
-            # --- 2. Charging Points ---
+            # 3. New Infos (Article/Serial) - Try Common Registers
+            # These are guessed based on standard Compleo maps
+            # Article Number often around 0x0020 (String)
+            art_num = await self._read_string(0x0020, 10)
+            if art_num: new_data["system"]["article_number"] = art_num
+            
+            # Serial Number often around 0x0030 (String)
+            ser_num = await self._read_string(0x0030, 10)
+            if ser_num: new_data["system"]["serial_number"] = ser_num
+
+            # 4. Points
             lp1_data = await self._read_charging_point_data(1)
             if lp1_data:
                 new_data["points"][1] = lp1_data
 
-            lp2_data = await self._read_charging_point_data(2)
-            if lp2_data:
-                new_data["points"][2] = lp2_data
+            # Only check LP2 if we are NOT on the flat map (Solo typically flat)
+            if self._lp_base_offset != 0:
+                lp2_data = await self._read_charging_point_data(2)
+                if lp2_data:
+                    new_data["points"][2] = lp2_data
 
-            # --- 3. Totals ---
+            # 5. Totals
             total_power = 0
-            total_l1 = 0
-            total_l2 = 0
-            total_l3 = 0
-            
             for p in new_data["points"].values():
                 total_power += p.get("current_power", 0)
-                total_l1 += p.get("current_l1", 0)
-                total_l2 += p.get("current_l2", 0)
-                total_l3 += p.get("current_l3", 0)
-            
             new_data["system"]["total_power"] = total_power
-            new_data["system"]["total_current_l1"] = total_l1
-            new_data["system"]["total_current_l2"] = total_l2
-            new_data["system"]["total_current_l3"] = total_l3
 
             return new_data
 

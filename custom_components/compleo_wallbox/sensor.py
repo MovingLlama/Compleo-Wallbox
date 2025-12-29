@@ -12,6 +12,7 @@ from homeassistant.const import (
     UnitOfElectricPotential,
     UnitOfEnergy,
     UnitOfPower,
+    EntityCategory,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -31,25 +32,33 @@ async def async_setup_entry(
     sensors = []
     
     # --- 1. System/Total Sensors ---
+    # Power/Current totals
     sys_sensors = [
-        ("total_power", "Total Power (Station)", UnitOfPower.WATT, SensorDeviceClass.POWER),
-        ("total_current_l1", "Total Current L1 (Station)", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT),
-        ("total_current_l2", "Total Current L2 (Station)", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT),
-        ("total_current_l3", "Total Current L3 (Station)", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT),
+        ("total_power", "Total Power (Station)", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT),
     ]
-    
-    for key, name, unit, dev_class in sys_sensors:
+    for key, name, unit, dev_class, state_class in sys_sensors:
         sensors.append(
-            CompleoSystemSensor(coordinator, uid_prefix, key, name, unit, dev_class)
+            CompleoSystemSensor(coordinator, uid_prefix, key, name, unit, dev_class, state_class)
+        )
+
+    # Info Sensors (Diagnostic)
+    info_sensors = [
+        ("firmware_version", "Firmware Version", None, None, None),
+        ("serial_number", "Serial Number", None, None, None),
+        ("article_number", "Article Number", None, None, None),
+    ]
+    for key, name, _, _, _ in info_sensors:
+        sensors.append(
+            CompleoInfoSensor(coordinator, uid_prefix, key, name)
         )
 
     # --- 2. Point Sensors ---
     data = coordinator.data or {"points": {}}
     points_data = data.get("points", {})
-    indices_to_create = points_data.keys() if points_data else [1]
+    indices = points_data.keys() if points_data else [1]
 
-    for point_index in indices_to_create:
-        sensor_types = [
+    for point_index in indices:
+        point_sensors = [
             ("current_power", "Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT),
             ("energy_total", "Total Energy", UnitOfEnergy.KILO_WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING),
             ("voltage_l1", "Voltage L1", UnitOfElectricPotential.VOLT, SensorDeviceClass.VOLTAGE, SensorStateClass.MEASUREMENT),
@@ -58,11 +67,10 @@ async def async_setup_entry(
             ("current_l1", "Current L1", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
             ("current_l2", "Current L2", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
             ("current_l3", "Current L3", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
-            # NEW: Phase Switch Count
-            ("phase_switch_count", "Phase Switches (Session)", None, None, SensorStateClass.MEASUREMENT),
+            ("phase_switch_count", "Phase Switches", None, None, SensorStateClass.MEASUREMENT),
         ]
 
-        for key, name, unit, dev_class, state_class in sensor_types:
+        for key, name, unit, dev_class, state_class in point_sensors:
             sensors.append(
                 CompleoPointSensor(
                     coordinator, uid_prefix, point_index, key, name, 
@@ -70,6 +78,7 @@ async def async_setup_entry(
                 )
             )
         
+        # Status Enum
         sensors.append(
             CompleoPointSensor(
                 coordinator, uid_prefix, point_index, "status_code", "Status",
@@ -80,23 +89,48 @@ async def async_setup_entry(
     async_add_entities(sensors)
 
 class CompleoSystemSensor(CoordinatorEntity, SensorEntity):
-    """Sensor for Global Station Data (Sums)."""
-    
+    """Sensor for Global Station Data."""
     _attr_has_entity_name = True
-    _attr_state_class = SensorStateClass.MEASUREMENT
-
-    def __init__(self, coordinator, uid_prefix, key, name, unit, device_class):
+    
+    def __init__(self, coordinator, uid_prefix, key, name, unit, device_class, state_class):
         super().__init__(coordinator)
         self._key = key
         self._attr_name = name
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = device_class
+        self._attr_state_class = state_class
         self._attr_unique_id = f"{uid_prefix}_system_{key}"
 
     @property
     def native_value(self):
         if not self.coordinator.data: return None
         return self.coordinator.data.get("system", {}).get(self._key)
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self.coordinator.host)},
+            "name": self.coordinator.device_name,
+            "manufacturer": "Compleo",
+            "model": "Wallbox (System)",
+        }
+
+class CompleoInfoSensor(CoordinatorEntity, SensorEntity):
+    """Diagnostic Sensor for Strings (FW, Serial, Article)."""
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator, uid_prefix, key, name):
+        super().__init__(coordinator)
+        self._key = key
+        self._attr_name = name
+        self._attr_unique_id = f"{uid_prefix}_system_{key}"
+        self._attr_icon = "mdi:information-outline"
+
+    @property
+    def native_value(self):
+        if not self.coordinator.data: return None
+        return self.coordinator.data.get("system", {}).get(self._key, "Unknown")
 
     @property
     def device_info(self):
@@ -130,7 +164,12 @@ class CompleoPointSensor(CoordinatorEntity, SensorEntity):
     def native_value(self):
         if not self.coordinator.data: return None
         points = self.coordinator.data.get("points", {})
-        return points.get(self._point_index, {}).get(self._key)
+        val = points.get(self._point_index, {}).get(self._key)
+        
+        if self._key == "status_code" and val is not None:
+            return str(val)
+            
+        return val
 
     @property
     def device_info(self):
