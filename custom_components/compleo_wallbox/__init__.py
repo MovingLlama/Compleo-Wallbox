@@ -6,7 +6,6 @@ from datetime import timedelta
 import logging
 
 from pymodbus.client import AsyncModbusTcpClient
-from pymodbus.exceptions import ModbusException
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform, CONF_HOST, CONF_PORT, CONF_NAME
 from homeassistant.core import HomeAssistant
@@ -58,7 +57,7 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         self.client = AsyncModbusTcpClient(host, port=port, timeout=5)
         self.device_name = name
         self.device_info_map = {} 
-        # Standard pymodbus v3+ uses 'slave'
+        # We start with 'slave' but will auto-switch to 'unit' if TypeError occurs
         self._param_name = "slave" 
         
         super().__init__(
@@ -74,7 +73,7 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         }
 
     async def _read_registers_safe(self, func_name, address, count, slave_id=1):
-        """Helper to call Modbus read functions."""
+        """Helper to call Modbus read functions handling slave vs unit arguments."""
         
         # 1. Ensure Connection
         if not self.client.connected:
@@ -83,47 +82,70 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
 
         func = getattr(self.client, func_name)
         
-        # 2. Try Reading (Simplified Logic)
-        # Instead of looping wildly, we try the standard 'slave' first.
-        # If that fails specifically on parameter error, we fallback.
-        try:
-            # Attempt 1: Standard 'slave'
-            kwargs = {self._param_name: slave_id}
-            result = await func(address, count, **kwargs)
-            
-            # Check for error
-            if result is None or result.isError():
-                # If it's a connection error, result might be Error or None.
-                # We try to reconnect once.
-                _LOGGER.debug("Read failed at 0x%04x. Reconnecting...", address)
-                self.client.close()
-                await asyncio.sleep(0.2)
-                await self.client.connect()
-                await asyncio.sleep(0.2)
-                result = await func(address, count, **kwargs)
+        # 2. Determine parameters to try
+        # Priority: Known working param -> 'slave' -> 'unit'
+        params_to_try = []
+        if self._param_name:
+            params_to_try.append(self._param_name)
+        
+        if "slave" not in params_to_try: params_to_try.append("slave")
+        if "unit" not in params_to_try: params_to_try.append("unit")
 
-            if result is not None and not result.isError():
+        last_error = None
+
+        for param in params_to_try:
+            try:
+                kwargs = {param: slave_id}
+                result = await func(address, count, **kwargs)
+                
+                # If we are here, the keyword argument was accepted (no TypeError).
+                
+                if result is None or (hasattr(result, 'isError') and result.isError()):
+                    # We got a Modbus-level error (or connection error), 
+                    # but the 'param' name was syntactically correct for pymodbus.
+                    # We record this as the working parameter name to avoid re-testing.
+                    self._param_name = param
+                    
+                    # If it's a connection/timeout error, we might want to return it 
+                    # instead of trying 'unit' (which would likely also timeout).
+                    if result is None:
+                        _LOGGER.debug("Read None (Timeout?) with param '%s' at 0x%04x", param, address)
+                    else:
+                         _LOGGER.debug("Modbus Error with param '%s' at 0x%04x: %s", param, address, result)
+                         
+                    return result 
+
+                # Success
+                self._param_name = param
                 return result
-            else:
-                _LOGGER.warning("Modbus Error reading 0x%04x: %s", address, result)
+
+            except TypeError as te:
+                # THIS catches the specific "unexpected keyword argument" error
+                # This means we used 'slave' but the lib wants 'unit' (or vice versa).
+                _LOGGER.debug("Pymodbus keyword '%s' not supported: %s. Trying next...", param, te)
+                continue
+                
+            except Exception as e:
+                # Other errors (e.g. connection lost during call)
+                _LOGGER.warning("Exception reading 0x%04x with param '%s': %s", address, param, e)
+                last_error = e
+                # We return None here so the update loop can decide to fail or retry
                 return None
 
-        except Exception as e:
-            _LOGGER.error("Exception reading 0x%04x: %s", address, e)
-            self.client.close()
-            return None
+        # If we exhausted all options
+        _LOGGER.error("Failed to read 0x%04x. All params failed. Last error: %s", address, last_error)
+        return None
 
     async def _read_charging_point_data(self, index: int) -> dict | None:
         """Read data for a specific charging point (1 or 2)."""
         base_address = index * 0x1000
         data = {}
 
-        # REVERTED TO 0-BASED: 
         # Offset 1 (0xX001) for Status Word
         start_addr_1 = base_address + 0x001
         rr_block1 = await self._read_registers_safe("read_input_registers", start_addr_1, 8)
         
-        if not rr_block1 or rr_block1.isError():
+        if not rr_block1 or (hasattr(rr_block1, 'isError') and rr_block1.isError()):
             return None
 
         regs = rr_block1.registers
@@ -134,12 +156,11 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         data["current_l3"] = regs[4] * 0.1
         data["energy_total"] = regs[7] * 0.1  # kWh
 
-        # REVERTED TO 0-BASED:
         # Offset A (0xX00A)
         start_addr_2 = base_address + 0x00A
         rr_block2 = await self._read_registers_safe("read_input_registers", start_addr_2, 6)
         
-        if rr_block2 and not rr_block2.isError():
+        if rr_block2 and not (hasattr(rr_block2, 'isError') and rr_block2.isError()):
             regs = rr_block2.registers
             data["phase_switch_count"] = regs[0] # 0xX00A
             data["status_code"] = regs[2]        # 0xX00C
@@ -152,7 +173,7 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         # Holding Register for Phase Mode (0xX009)
         addr_hold = base_address + 0x009
         rr_hold = await self._read_registers_safe("read_holding_registers", addr_hold, 1)
-        if rr_hold and not rr_hold.isError():
+        if rr_hold and not (hasattr(rr_hold, 'isError') and rr_hold.isError()):
             data["phase_mode"] = rr_hold.registers[0]
 
         return data
@@ -163,21 +184,19 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             new_data = {"system": {}, "points": {}}
             
             # --- 0. Connection Probe ---
-            # REVERTED TO 0x0000 based on mbpoll result [1]: 110 (Ref 1 = Addr 0)
+            # Using 0x0000 (Holding)
             rr_hold = await self._read_registers_safe("read_holding_registers", 0x0000, 1)
             
-            if rr_hold and not rr_hold.isError():
+            if rr_hold and not (hasattr(rr_hold, 'isError') and rr_hold.isError()):
                 new_data["system"]["power_setpoint_abs"] = rr_hold.registers[0]
             else:
-                 # Detailed logging for debugging
-                 _LOGGER.error("Probe failed. Result: %s. Connection state: %s", 
-                               rr_hold, self.client.connected)
-                 raise UpdateFailed("Could not read Global Register 0x0000. Connection failed.")
+                 # If probe fails, raise error to mark availability
+                 raise UpdateFailed(f"Could not read Global Register 0x0000. Result: {rr_hold}")
 
             # --- 1. System Info ---
             # 0x0006
             rr_sys = await self._read_registers_safe("read_input_registers", 0x0006, 2)
-            if rr_sys and not rr_sys.isError():
+            if rr_sys and not (hasattr(rr_sys, 'isError') and rr_sys.isError()):
                 major = rr_sys.registers[1] >> 8
                 minor = rr_sys.registers[1] & 0xFF
                 patch = rr_sys.registers[0] >> 8
