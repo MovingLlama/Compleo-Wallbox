@@ -22,7 +22,7 @@ async def async_setup_entry(
     """
     Set up the Compleo number entities.
     
-    Creates the 'Charging Power Limit' entity.
+    Creates the global 'Charging Power Limit' entity.
     """
     coordinator = hass.data[DOMAIN][entry.entry_id]
     uid_prefix = entry.unique_id or coordinator.host
@@ -31,17 +31,15 @@ async def async_setup_entry(
 
 class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
     """
-    Representation of the Charging Power Limit.
+    Representation of the Global Charging Power Limit.
     
-    Allows the user to set the maximum charging power (in Watts).
-    Writes to Modbus Holding Register 0x0000.
+    This belongs to the main device (Wallbox itself).
     """
 
     _attr_has_entity_name = True
     _attr_name = "Charging Power Limit"
     _attr_native_unit_of_measurement = UnitOfPower.WATT
     _attr_device_class = NumberDeviceClass.POWER
-    # Range defined by spec or reasonable hardware limits (0 to 22kW)
     _attr_native_min_value = 0
     _attr_native_max_value = 22000 
     _attr_native_step = 100
@@ -57,44 +55,47 @@ class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
         """
         Return the current value.
         
-        Reads 'power_setpoint_abs' from coordinator data.
-        Register value is in 100W steps, so we multiply by 100 to get Watts.
+        Reads from 'system' -> 'power_setpoint_abs'.
         """
-        raw = self.coordinator.data.get("power_setpoint_abs")
+        system_data = self.coordinator.data.get("system", {})
+        raw = system_data.get("power_setpoint_abs")
         if raw is not None:
             return float(raw * 100)
         return None
 
     @property
     def device_info(self):
-        """Return device info."""
-        return self.coordinator.device_info_map
+        """
+        Return device info for the Main Device.
+        """
+        # This uses the main device identifier
+        return {
+            "identifiers": {(DOMAIN, self.coordinator.host)},
+            "name": self.coordinator.device_name,
+            "manufacturer": "Compleo",
+            "sw_version": self.coordinator.data.get("system", {}).get("firmware_version", "Unknown"),
+            "model": "Wallbox (System)",
+        }
 
     async def async_set_native_value(self, value: float) -> None:
         """
         Update the current value.
-        
-        Writes the new value to the Modbus register.
         """
-        # Convert Watts back to 100W units for the register
         modbus_val = int(value / 100)
         
         try:
-            # Use the detected Modbus parameter name (slave/unit/device_id)
             param = self.coordinator._param_name or "slave"
             
-            # Ensure connection is open
             if not self.coordinator.client.connected:
                 await self.coordinator.client.connect()
-                await asyncio.sleep(0.5) # Short pause after reconnect
+                await asyncio.sleep(0.5)
 
-            # Write to Holding Register 0x0000
+            # Write to Holding Register 0x0000 (Global)
             result = await self.coordinator.client.write_register(0x0000, modbus_val, **{param: 1})
             
             if result.isError():
                 _LOGGER.error("Modbus error while writing power limit: %s", result)
             else:
-                # Trigger an immediate refresh to update the UI
                 await self.coordinator.async_request_refresh()
                 
         except Exception as err:
