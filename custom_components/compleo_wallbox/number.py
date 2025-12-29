@@ -32,7 +32,7 @@ async def async_setup_entry(
 
 
 class CompleoStationLimit(CoordinatorEntity, NumberEntity):
-    """Global Charging Power Limit (0x0001)."""
+    """Global Charging Power Limit (Wire 0x0001)."""
 
     _attr_has_entity_name = True
     _attr_name = "Station Power Limit"
@@ -64,7 +64,7 @@ class CompleoStationLimit(CoordinatorEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         modbus_val = int(value / 100)
-        # Adjusted +1: 0x0000 -> 0x0001
+        # SHIFTED +1: Doc 0x0000 -> Wire 0x0001
         await self._write_register(0x0001, modbus_val)
 
     async def _write_register(self, address, value):

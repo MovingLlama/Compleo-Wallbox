@@ -44,7 +44,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 class CompleoPhaseMode(CoordinatorEntity, SelectEntity):
-    """Representation of the Phase Mode Selection (0x1009 + 1 = 0x100A)."""
+    """Representation of the Phase Mode Selection (Wire 0x100A)."""
 
     _attr_has_entity_name = True
     _attr_name = "Phase Mode"
@@ -55,7 +55,7 @@ class CompleoPhaseMode(CoordinatorEntity, SelectEntity):
         super().__init__(coordinator)
         self._point_index = point_index
         self._attr_unique_id = f"{uid_prefix}_lp{point_index}_phase_mode"
-        # Register: 0x1009 (Base) + 1 (Offset fix) -> 0x100A
+        # Register: 0x1009 (Doc) + 1 (Shift) -> 0x100A
         # LP1: 0x100A, LP2: 0x200A
         self._register = (point_index * 0x1000) + 0x00A
 
