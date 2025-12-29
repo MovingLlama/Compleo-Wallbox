@@ -32,24 +32,13 @@ async def async_setup_entry(
     sensors = []
     
     # --- 1. System/Total Sensors ---
-    # Power/Current totals
+    # Only Total Power, no separate Info Sensors anymore
     sys_sensors = [
         ("total_power", "Total Power (Station)", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT),
     ]
     for key, name, unit, dev_class, state_class in sys_sensors:
         sensors.append(
             CompleoSystemSensor(coordinator, uid_prefix, key, name, unit, dev_class, state_class)
-        )
-
-    # Info Sensors (Diagnostic)
-    info_sensors = [
-        ("firmware_version", "Firmware Version", None, None, None),
-        ("serial_number", "Serial Number", None, None, None),
-        ("article_number", "Article Number", None, None, None),
-    ]
-    for key, name, _, _, _ in info_sensors:
-        sensors.append(
-            CompleoInfoSensor(coordinator, uid_prefix, key, name)
         )
 
     # --- 2. Point Sensors ---
@@ -108,37 +97,25 @@ class CompleoSystemSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def device_info(self):
+        """Return device registry information."""
+        system_data = self.coordinator.data.get("system", {}) if self.coordinator.data else {}
+        
+        # Build Device Info from fetched data
+        fw = system_data.get("firmware_version", "Unknown")
+        model = system_data.get("article_number", "Compleo Wallbox")
+        serial = system_data.get("serial_number")
+        
+        # Identifiers: Host is always primary. Add Serial if available.
+        identifiers = {(DOMAIN, self.coordinator.host)}
+        if serial:
+            identifiers.add((DOMAIN, serial))
+
         return {
-            "identifiers": {(DOMAIN, self.coordinator.host)},
+            "identifiers": identifiers,
             "name": self.coordinator.device_name,
             "manufacturer": "Compleo",
-            "model": "Wallbox (System)",
-        }
-
-class CompleoInfoSensor(CoordinatorEntity, SensorEntity):
-    """Diagnostic Sensor for Strings (FW, Serial, Article)."""
-    _attr_has_entity_name = True
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, coordinator, uid_prefix, key, name):
-        super().__init__(coordinator)
-        self._key = key
-        self._attr_name = name
-        self._attr_unique_id = f"{uid_prefix}_system_{key}"
-        self._attr_icon = "mdi:information-outline"
-
-    @property
-    def native_value(self):
-        if not self.coordinator.data: return None
-        return self.coordinator.data.get("system", {}).get(self._key, "Unknown")
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self.coordinator.host)},
-            "name": self.coordinator.device_name,
-            "manufacturer": "Compleo",
-            "model": "Wallbox (System)",
+            "model": model,
+            "sw_version": fw,
         }
 
 class CompleoPointSensor(CoordinatorEntity, SensorEntity):

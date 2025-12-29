@@ -104,15 +104,10 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                 result = await func(*args, **kwargs)
                 
                 if result is None or (hasattr(result, 'isError') and result.isError()):
-                    # Functional error (device responded with error or timeout)
-                    # This implies the args were accepted.
-                    if self._strategy_name == name or not self._strategy_name:
-                         pass # Debug logging skipped to reduce noise
                     return result
 
                 # Check register count to prevent "list index out of range"
                 if hasattr(result, 'registers') and len(result.registers) < count:
-                    _LOGGER.debug("Strategy '%s' returned %d regs, expected %d", name, len(result.registers), count)
                     continue
 
                 self._strategy_name = name
@@ -124,7 +119,6 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                 last_error = e
                 continue
 
-        _LOGGER.debug("Failed to read 0x%04x. Last error: %s", address, last_error)
         return None
 
     async def _read_string(self, address, count) -> str | None:
@@ -136,7 +130,10 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                 s = b""
                 for reg in rr.registers:
                     s += reg.to_bytes(2, 'big')
-                return s.decode('ascii').rstrip('\x00').strip()
+                # Decode and strip null bytes / spaces
+                val = s.decode('ascii', errors='ignore').rstrip('\x00').strip()
+                if val:
+                    return val
             except Exception:
                 pass
         return None
@@ -145,36 +142,30 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         """Read data for a specific charging point."""
         
         # Determine Base Address
-        # If we haven't determined the map yet, try 0x1000 first, then 0x0000 (for LP1)
         base_address = index * 0x1000
-        
         if index == 1 and self._lp_base_offset == 0:
             base_address = 0x0000
         
         data = {}
 
         # --- Block 1: Status/Power/Energy ---
-        # Try reading at offset 1
-        # If base is 0x0000, 0x0001 might overlap with Holding 0x0001 (Limit %)
-        # BUT Input and Holding are different memory areas.
         start_addr_1 = base_address + 0x001
         
         rr_block1 = await self._read_registers_safe("read_input_registers", start_addr_1, 8)
         
         # FALLBACK DETECTION (Only for LP1)
         if (not rr_block1 or (hasattr(rr_block1, 'isError') and rr_block1.isError())) and index == 1 and self._lp_base_offset is None:
-            _LOGGER.debug("LP1 at 0x1000 failed, trying 0x0000 map...")
+            # _LOGGER.debug("LP1 at 0x1000 failed, trying 0x0000 map...")
             base_address = 0x0000
             start_addr_1 = 0x0001
             rr_block1 = await self._read_registers_safe("read_input_registers", start_addr_1, 8)
             if rr_block1 and not (hasattr(rr_block1, 'isError') and rr_block1.isError()):
-                self._lp_base_offset = 0 # Remember that we are on a flat map
+                self._lp_base_offset = 0 
                 _LOGGER.info("Detected Compleo Legacy Map (Base 0x0000)")
 
         if not rr_block1 or (hasattr(rr_block1, 'isError') and rr_block1.isError()):
             return None
 
-        # Safe parsing
         regs = rr_block1.registers
         if len(regs) >= 8:
             data["status_word"] = regs[0]
@@ -213,31 +204,25 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             new_data = {"system": {}, "points": {}}
             
             # 1. Global Limit (Probe) - 0x0000
+            # If this fails, we LOG it but continue, so we might still get point data
             rr_hold = await self._read_registers_safe("read_holding_registers", 0x0000, 1)
             if rr_hold and not (hasattr(rr_hold, 'isError') and rr_hold.isError()) and len(rr_hold.registers) > 0:
                 new_data["system"]["power_setpoint_abs"] = rr_hold.registers[0]
-            else:
-                 raise UpdateFailed(f"Could not read Global Register 0x0000. Result: {rr_hold}")
-
+            
             # 2. System Info (Firmware) - 0x0006 (2 regs)
             rr_sys = await self._read_registers_safe("read_input_registers", 0x0006, 2)
             if rr_sys and not (hasattr(rr_sys, 'isError') and rr_sys.isError()) and len(rr_sys.registers) >= 2:
-                # 0x0006: Patch, 0x0007: Major/Minor
-                patch = rr_sys.registers[0]
+                patch = rr_sys.registers[0] >> 8 
                 major = rr_sys.registers[1] >> 8
                 minor = rr_sys.registers[1] & 0xFF
-                # Note: PDF says 0x0006 is "Patch << 8". 
-                # If reading 0x0006 gave a value like 0x0500 (1280), Patch is 5.
-                patch = patch >> 8 
                 new_data["system"]["firmware_version"] = f"{major}.{minor}.{patch}"
 
-            # 3. New Infos (Article/Serial) - Try Common Registers
-            # These are guessed based on standard Compleo maps
-            # Article Number often around 0x0020 (String)
+            # 3. Strings (Article/Serial)
+            # Article Number often 0x0020
             art_num = await self._read_string(0x0020, 10)
             if art_num: new_data["system"]["article_number"] = art_num
             
-            # Serial Number often around 0x0030 (String)
+            # Serial Number often 0x0030
             ser_num = await self._read_string(0x0030, 10)
             if ser_num: new_data["system"]["serial_number"] = ser_num
 
@@ -246,7 +231,6 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             if lp1_data:
                 new_data["points"][1] = lp1_data
 
-            # Only check LP2 if we are NOT on the flat map (Solo typically flat)
             if self._lp_base_offset != 0:
                 lp2_data = await self._read_charging_point_data(2)
                 if lp2_data:
@@ -254,8 +238,16 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
 
             # 5. Totals
             total_power = 0
+            if not new_data["points"]:
+                # If we have no points AND no system data, raise error
+                if not new_data["system"]:
+                    raise UpdateFailed("No data received from Wallbox")
+            
             for p in new_data["points"].values():
-                total_power += p.get("current_power", 0)
+                val = p.get("current_power")
+                if val is not None:
+                    total_power += val
+            
             new_data["system"]["total_power"] = total_power
 
             return new_data
