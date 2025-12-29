@@ -57,7 +57,7 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         self.client = AsyncModbusTcpClient(host, port=port, timeout=5)
         self.device_name = name
         self.device_info_map = {} 
-        # Stores the name of the working strategy (e.g. "slave_kw", "no_count")
+        # Stores the name of the working strategy (e.g. "slave_kw", "no_unit_cnt_kw")
         self._strategy_name = None
         
         super().__init__(
@@ -85,18 +85,26 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         # Define strategies: (name, args_list, kwargs_dict)
         strategies = []
         
-        # Strategy 1: Standard v3 (slave keyword)
-        strategies.append(("slave_kw", [address, count], {"slave": slave_id}))
-        # Strategy 2: Standard v2 (unit keyword)
-        strategies.append(("unit_kw", [address, count], {"unit": slave_id}))
-        # Strategy 3: No ID (Fallback to default)
-        strategies.append(("no_unit", [address, count], {}))
-        # Strategy 4: Positional ID (address, count, slave_id)
-        strategies.append(("pos_unit", [address, count, slave_id], {}))
-        # Strategy 5: No Count (Emergency for "takes 2 but 3 given")
-        # Only valid if count implies 1 or function handles it implicitly
-        strategies.append(("no_count", [address], {}))
-
+        # Group A: Positional Count (Standard)
+        # 1. slave keyword
+        strategies.append(("slave_pos_cnt", [address, count], {"slave": slave_id}))
+        # 2. unit keyword
+        strategies.append(("unit_pos_cnt", [address, count], {"unit": slave_id}))
+        # 3. No ID (Fallback)
+        strategies.append(("no_unit_pos_cnt", [address, count], {}))
+        
+        # Group B: Keyword Count (For strict signatures causing "takes 2 but 3 given")
+        # 4. slave keyword, count keyword
+        strategies.append(("slave_kw_cnt", [address], {"count": count, "slave": slave_id}))
+        # 5. unit keyword, count keyword
+        strategies.append(("unit_kw_cnt", [address], {"count": count, "unit": slave_id}))
+        # 6. No ID, count keyword
+        strategies.append(("no_unit_kw_cnt", [address], {"count": count}))
+        
+        # Group C: Positional ID (Old pymodbus)
+        # 7. Positional ID
+        strategies.append(("pos_all", [address, count, slave_id], {}))
+        
         # Optimization: Try the last successful strategy first
         if self._strategy_name:
              for i, (name, _, _) in enumerate(strategies):
@@ -115,14 +123,23 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                 if result is None or (hasattr(result, 'isError') and result.isError()):
                     # The call signature was accepted, but the device didn't reply correctly.
                     # We accept this as the "correct" strategy but failed communication.
-                    self._strategy_name = name
-                        
-                    if result is None:
-                        _LOGGER.debug("Read None (Timeout?) with strategy '%s' at 0x%04x", name, address)
-                    else:
-                        _LOGGER.debug("Modbus Error with strategy '%s' at 0x%04x: %s", name, address, result)
+                    
+                    # Log debug info but don't spam warning unless it's the strategy we thought worked
+                    if self._strategy_name == name or not self._strategy_name:
+                         if result is None:
+                             _LOGGER.debug("Read None (Timeout?) with strategy '%s' at 0x%04x", name, address)
+                         else:
+                             _LOGGER.debug("Modbus Error with strategy '%s' at 0x%04x: %s", name, address, result)
                     
                     return result
+
+                # Check if we got the expected number of registers
+                # (Prevents "list index out of range" if device returns partial data)
+                if hasattr(result, 'registers') and len(result.registers) < count:
+                    _LOGGER.debug("Strategy '%s' returned fewer registers (%d) than requested (%d)", 
+                                  name, len(result.registers), count)
+                    # Treat as failure for this strategy
+                    continue
 
                 # Success!
                 self._strategy_name = name
@@ -130,7 +147,7 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
 
             except TypeError as te:
                 # Signature mismatch (unexpected keyword, wrong arg count)
-                _LOGGER.debug("Strategy '%s' failed with TypeError: %s", name, te)
+                # This is normal during discovery
                 last_error = te
                 continue
                 
