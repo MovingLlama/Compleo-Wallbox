@@ -6,6 +6,7 @@ from datetime import timedelta
 import logging
 
 from pymodbus.client import AsyncModbusTcpClient
+from pymodbus.exceptions import ModbusException
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform, CONF_HOST, CONF_PORT, CONF_NAME
 from homeassistant.core import HomeAssistant
@@ -16,7 +17,7 @@ from homeassistant.helpers.update_coordinator import (
 
 from .const import DOMAIN, DEFAULT_SCAN_INTERVAL
 
-# Added SELECT platform for Phase Mode
+# Supported platforms
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.NUMBER, Platform.SELECT]
 
 _LOGGER = logging.getLogger(__name__)
@@ -27,11 +28,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     port = entry.data[CONF_PORT]
     name = entry.data.get(CONF_NAME, "Compleo Wallbox")
 
-    _LOGGER.debug("Setting up Compleo Wallbox entry for host: %s", host)
-
     coordinator = CompleoDataUpdateCoordinator(hass, host, port, name)
 
-    # First refresh: We try to fetch data, but suppress errors to allow HA startup
+    # Allow startup even if offline
     try:
         await coordinator.async_config_entry_first_refresh()
     except Exception as e:
@@ -55,9 +54,11 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
 
     def __init__(self, hass: HomeAssistant, host: str, port: int, name: str) -> None:
         self.host = host
-        self.client = AsyncModbusTcpClient(host, port=port, timeout=10)
+        # Slightly longer timeout for stability
+        self.client = AsyncModbusTcpClient(host, port=port, timeout=5)
         self.device_name = name
         self.device_info_map = {} 
+        # Standard pymodbus v3+ uses 'slave'
         self._param_name = "slave" 
         
         super().__init__(
@@ -73,45 +74,53 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         }
 
     async def _read_registers_safe(self, func_name, address, count, slave_id=1):
-        """Helper to call Modbus read functions with automatic parameter detection."""
+        """Helper to call Modbus read functions."""
         
-        # Ensure connection
+        # 1. Ensure Connection
         if not self.client.connected:
             await self.client.connect()
-            # Increased delay after connect for stability
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.2)
 
         func = getattr(self.client, func_name)
         
-        # Try different parameter names for the slave ID
-        for p_name in [self._param_name, "slave", "unit", "device_id"]:
-            try:
-                kwargs = {p_name: slave_id}
-                # Increased delay before each request (Message Wait)
-                await asyncio.sleep(0.1) 
-                
-                result = await func(address, count, **kwargs)
-                
-                if result is not None and not result.isError():
-                    self._param_name = p_name
-                    return result
-            except Exception:
-                # Force reconnect if something went wrong inside the loop
+        # 2. Try Reading (Simplified Logic)
+        # Instead of looping wildly, we try the standard 'slave' first.
+        # If that fails specifically on parameter error, we fallback.
+        try:
+            # Attempt 1: Standard 'slave'
+            kwargs = {self._param_name: slave_id}
+            result = await func(address, count, **kwargs)
+            
+            # Check for error
+            if result is None or result.isError():
+                # If it's a connection error, result might be Error or None.
+                # We try to reconnect once.
+                _LOGGER.debug("Read failed at 0x%04x. Reconnecting...", address)
                 self.client.close()
                 await asyncio.sleep(0.2)
                 await self.client.connect()
-                continue
-                
-        return None
+                await asyncio.sleep(0.2)
+                result = await func(address, count, **kwargs)
+
+            if result is not None and not result.isError():
+                return result
+            else:
+                _LOGGER.warning("Modbus Error reading 0x%04x: %s", address, result)
+                return None
+
+        except Exception as e:
+            _LOGGER.error("Exception reading 0x%04x: %s", address, e)
+            self.client.close()
+            return None
 
     async def _read_charging_point_data(self, index: int) -> dict | None:
         """Read data for a specific charging point (1 or 2)."""
         base_address = index * 0x1000
         data = {}
 
-        # --- Block 1 (Inputs) ---
-        # SHIFTED +1: Doc 0xX001 -> Wire 0xX002
-        start_addr_1 = base_address + 0x002
+        # REVERTED TO 0-BASED: 
+        # Offset 1 (0xX001) for Status Word
+        start_addr_1 = base_address + 0x001
         rr_block1 = await self._read_registers_safe("read_input_registers", start_addr_1, 8)
         
         if not rr_block1 or rr_block1.isError():
@@ -125,25 +134,23 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         data["current_l3"] = regs[4] * 0.1
         data["energy_total"] = regs[7] * 0.1  # kWh
 
-        # --- Block 2 (Inputs) ---
-        # SHIFTED +1: Doc 0xX00A -> Wire 0xX00B
-        start_addr_2 = base_address + 0x00B
+        # REVERTED TO 0-BASED:
+        # Offset A (0xX00A)
+        start_addr_2 = base_address + 0x00A
         rr_block2 = await self._read_registers_safe("read_input_registers", start_addr_2, 6)
         
         if rr_block2 and not rr_block2.isError():
             regs = rr_block2.registers
-            data["phase_switch_count"] = regs[0] # Wire 0xX00B (Doc 0xX00A)
-            # regs[1] -> Wire 0xX00C (Doc 0xX00B)
-            data["status_code"] = regs[2]        # Wire 0xX00D (Doc 0xX00C Status)
-            data["voltage_l1"] = regs[3]         # Wire 0xX00E (Doc 0xX00D)
-            data["voltage_l2"] = regs[4]         # Wire 0xX00F (Doc 0xX00E)
-            data["voltage_l3"] = regs[5]         # Wire 0xX010 (Doc 0xX00F)
+            data["phase_switch_count"] = regs[0] # 0xX00A
+            data["status_code"] = regs[2]        # 0xX00C
+            data["voltage_l1"] = regs[3]         # 0xX00D
+            data["voltage_l2"] = regs[4]         # 0xX00E
+            data["voltage_l3"] = regs[5]         # 0xX00F
         else:
             data.update({"status_code": 0, "voltage_l1": 0, "voltage_l2": 0, "voltage_l3": 0})
             
-        # --- Point Holding Registers (Phase Mode) ---
-        # SHIFTED +1: Doc 0xX009 -> Wire 0xX00A
-        addr_hold = base_address + 0x00A
+        # Holding Register for Phase Mode (0xX009)
+        addr_hold = base_address + 0x009
         rr_hold = await self._read_registers_safe("read_holding_registers", addr_hold, 1)
         if rr_hold and not rr_hold.isError():
             data["phase_mode"] = rr_hold.registers[0]
@@ -155,17 +162,21 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         try:
             new_data = {"system": {}, "points": {}}
             
-            # --- 0. Connection Probe & Global Settings ---
-            # SHIFTED +1: Doc 0x0000 -> Wire 0x0001
-            rr_hold = await self._read_registers_safe("read_holding_registers", 0x0001, 1)
+            # --- 0. Connection Probe ---
+            # REVERTED TO 0x0000 based on mbpoll result [1]: 110 (Ref 1 = Addr 0)
+            rr_hold = await self._read_registers_safe("read_holding_registers", 0x0000, 1)
+            
             if rr_hold and not rr_hold.isError():
                 new_data["system"]["power_setpoint_abs"] = rr_hold.registers[0]
             else:
-                 raise UpdateFailed("Could not read Global Register 0x0001. Connection failed.")
+                 # Detailed logging for debugging
+                 _LOGGER.error("Probe failed. Result: %s. Connection state: %s", 
+                               rr_hold, self.client.connected)
+                 raise UpdateFailed("Could not read Global Register 0x0000. Connection failed.")
 
             # --- 1. System Info ---
-            # SHIFTED +1: Doc 0x0006 -> Wire 0x0007
-            rr_sys = await self._read_registers_safe("read_input_registers", 0x0007, 2)
+            # 0x0006
+            rr_sys = await self._read_registers_safe("read_input_registers", 0x0006, 2)
             if rr_sys and not rr_sys.isError():
                 major = rr_sys.registers[1] >> 8
                 minor = rr_sys.registers[1] & 0xFF
@@ -181,7 +192,7 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             if lp2_data:
                 new_data["points"][2] = lp2_data
 
-            # --- 3. Calculate Station Totals ---
+            # --- 3. Totals ---
             total_power = 0
             total_l1 = 0
             total_l2 = 0
