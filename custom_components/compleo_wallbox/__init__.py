@@ -57,8 +57,8 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         self.client = AsyncModbusTcpClient(host, port=port, timeout=5)
         self.device_name = name
         self.device_info_map = {} 
-        # Start with None as default since slave/unit seem unsupported in logs
-        self._param_name = None
+        # Stores the name of the working strategy (e.g. "slave_kw", "no_count")
+        self._strategy_name = None
         
         super().__init__(
             hass,
@@ -73,7 +73,7 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         }
 
     async def _read_registers_safe(self, func_name, address, count, slave_id=1):
-        """Helper to call Modbus read functions handling slave vs unit arguments."""
+        """Helper to call Modbus read functions trying multiple signatures."""
         
         # 1. Ensure Connection
         if not self.client.connected:
@@ -82,68 +82,65 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
 
         func = getattr(self.client, func_name)
         
-        # 2. Determine parameters to try
-        # Priority: Cached param -> 'slave' -> 'unit' -> None (fallback)
-        params_to_test = []
-        if self._param_name:
-            params_to_test.append(self._param_name)
+        # Define strategies: (name, args_list, kwargs_dict)
+        strategies = []
         
-        # Based on logs, 'slave' and 'unit' fail, so we put None higher priority or just ensure it's tested
-        if "slave" not in params_to_test: params_to_test.append("slave")
-        if "unit" not in params_to_test: params_to_test.append("unit")
-        if None not in params_to_test: params_to_test.append(None)
-        
+        # Strategy 1: Standard v3 (slave keyword)
+        strategies.append(("slave_kw", [address, count], {"slave": slave_id}))
+        # Strategy 2: Standard v2 (unit keyword)
+        strategies.append(("unit_kw", [address, count], {"unit": slave_id}))
+        # Strategy 3: No ID (Fallback to default)
+        strategies.append(("no_unit", [address, count], {}))
+        # Strategy 4: Positional ID (address, count, slave_id)
+        strategies.append(("pos_unit", [address, count, slave_id], {}))
+        # Strategy 5: No Count (Emergency for "takes 2 but 3 given")
+        # Only valid if count implies 1 or function handles it implicitly
+        strategies.append(("no_count", [address], {}))
+
+        # Optimization: Try the last successful strategy first
+        if self._strategy_name:
+             for i, (name, _, _) in enumerate(strategies):
+                 if name == self._strategy_name:
+                     strategies.insert(0, strategies.pop(i))
+                     break
+
         last_error = None
 
-        for param_key in params_to_test:
+        for name, args, kwargs in strategies:
             try:
-                # CRITICAL FIX: Always pass 'count' as a keyword argument!
-                # The logs showed that passing it positionally causes "takes 2 but 3 given".
-                kwargs = {"count": count}
+                # Execute strategy
+                result = await func(*args, **kwargs)
                 
-                if param_key is not None:
-                    kwargs[param_key] = slave_id
-                
-                # Call function with address (positional) and rest as kwargs
-                result = await func(address, **kwargs)
-                
-                # Check result
+                # Check for functional failure (Timeout/Modbus Exception)
                 if result is None or (hasattr(result, 'isError') and result.isError()):
-                    # Functional failure (timeout, modbus exception)
-                    # This implies the arguments were accepted (no TypeError)
-                    
-                    if param_key is not None:
-                        self._param_name = param_key
+                    # The call signature was accepted, but the device didn't reply correctly.
+                    # We accept this as the "correct" strategy but failed communication.
+                    self._strategy_name = name
                         
                     if result is None:
-                        _LOGGER.debug("Read None (Timeout?) with param '%s' at 0x%04x", param_key, address)
+                        _LOGGER.debug("Read None (Timeout?) with strategy '%s' at 0x%04x", name, address)
                     else:
-                        _LOGGER.debug("Modbus Error with param '%s' at 0x%04x: %s", param_key, address, result)
+                        _LOGGER.debug("Modbus Error with strategy '%s' at 0x%04x: %s", name, address, result)
                     
-                    # Return the error result, don't retry other params for functional errors
                     return result
 
-                # Success
-                if param_key is not None:
-                    self._param_name = param_key
-                elif self._param_name is None:
-                    # If None worked, keep it as preferred
-                    self._param_name = None
-                    
+                # Success!
+                self._strategy_name = name
                 return result
 
             except TypeError as te:
-                # This catches unexpected keyword arguments
-                _LOGGER.debug("Argument error with param '%s': %s. Trying next...", param_key, te)
+                # Signature mismatch (unexpected keyword, wrong arg count)
+                _LOGGER.debug("Strategy '%s' failed with TypeError: %s", name, te)
                 last_error = te
                 continue
                 
             except Exception as e:
-                _LOGGER.warning("Exception reading 0x%04x with param '%s': %s", address, param_key, e)
+                # Other errors (connection lost, etc)
+                _LOGGER.warning("Exception reading 0x%04x with strategy '%s': %s", address, name, e)
                 last_error = e
                 continue
 
-        _LOGGER.error("Failed to read 0x%04x. All params failed. Last error: %s", address, last_error)
+        _LOGGER.error("Failed to read 0x%04x. All strategies failed. Last error: %s", address, last_error)
         return None
 
     async def _read_charging_point_data(self, index: int) -> dict | None:
@@ -200,6 +197,7 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             if rr_hold and not (hasattr(rr_hold, 'isError') and rr_hold.isError()):
                 new_data["system"]["power_setpoint_abs"] = rr_hold.registers[0]
             else:
+                 # If probe fails, raise error to mark availability
                  raise UpdateFailed(f"Could not read Global Register 0x0000. Result: {rr_hold}")
 
             # --- 1. System Info ---
