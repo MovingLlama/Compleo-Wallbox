@@ -83,31 +83,34 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         func = getattr(self.client, func_name)
         
         # 2. Determine parameters to try
-        # Priority: Known working param -> 'slave' -> 'unit'
         params_to_try = []
         if self._param_name:
             params_to_try.append(self._param_name)
         
         if "slave" not in params_to_try: params_to_try.append("slave")
         if "unit" not in params_to_try: params_to_try.append("unit")
+        
+        # Fallback: Try without any keyword argument (None)
+        if None not in params_to_try: params_to_try.append(None)
 
         last_error = None
 
         for param in params_to_try:
             try:
-                kwargs = {param: slave_id}
+                if param is not None:
+                    kwargs = {param: slave_id}
+                else:
+                    kwargs = {}
+
                 result = await func(address, count, **kwargs)
                 
-                # If we are here, the keyword argument was accepted (no TypeError).
-                
+                # Check if result indicates success (not None/Error)
                 if result is None or (hasattr(result, 'isError') and result.isError()):
-                    # We got a Modbus-level error (or connection error), 
-                    # but the 'param' name was syntactically correct for pymodbus.
-                    # We record this as the working parameter name to avoid re-testing.
-                    self._param_name = param
+                    # Valid call syntax (no TypeError), but Modbus logic error/timeout.
                     
-                    # If it's a connection/timeout error, we might want to return it 
-                    # instead of trying 'unit' (which would likely also timeout).
+                    if param is not None:
+                        self._param_name = param
+                    
                     if result is None:
                         _LOGGER.debug("Read None (Timeout?) with param '%s' at 0x%04x", param, address)
                     else:
@@ -116,21 +119,19 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                     return result 
 
                 # Success
-                self._param_name = param
+                if param is not None:
+                    self._param_name = param
                 return result
 
             except TypeError as te:
                 # THIS catches the specific "unexpected keyword argument" error
-                # This means we used 'slave' but the lib wants 'unit' (or vice versa).
-                _LOGGER.debug("Pymodbus keyword '%s' not supported: %s. Trying next...", param, te)
+                _LOGGER.warning("Pymodbus keyword '%s' not supported: %s. Trying next...", param, te)
                 continue
                 
             except Exception as e:
-                # Other errors (e.g. connection lost during call)
                 _LOGGER.warning("Exception reading 0x%04x with param '%s': %s", address, param, e)
                 last_error = e
-                # We return None here so the update loop can decide to fail or retry
-                return None
+                continue
 
         # If we exhausted all options
         _LOGGER.error("Failed to read 0x%04x. All params failed. Last error: %s", address, last_error)
