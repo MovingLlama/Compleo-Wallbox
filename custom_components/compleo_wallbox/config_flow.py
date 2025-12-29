@@ -23,33 +23,41 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     def __init__(self) -> None:
-        """Initialize flow."""
+        """Initialize the config flow."""
         self._discovery_info: dict[str, Any] = {}
 
     async def async_step_zeroconf(
         self, discovery_info: zeroconf.ZeroconfServiceInfo
     ) -> FlowResult:
-        """Handle zeroconf discovery."""
-        host = discovery_info.host
-        port = DEFAULT_PORT # Modbus ist meist 502, nicht der Web-Port 80 aus Zeroconf
+        """
+        Handle zeroconf discovery.
         
-        # Extrahiere Infos aus TXT Records
-        # Beispiel: "CCS-Hardware-Info=board[P51]..."
+        Automatically detected when the device is on the network.
+        """
+        host = discovery_info.host
+        # Modbus usually runs on port 502, not the HTTP port returned by Zeroconf
+        port = DEFAULT_PORT 
+        
+        # Extract information from TXT Records
+        # Example format: "CCS-Hardware-Info=board[P51]..."
         properties = discovery_info.properties
         model = properties.get("CCS-Hardware-Info", "Unknown").split(",")[0].replace("board[", "").replace("]", "")
-        version = properties.get("CCS-Version", "Unknown")
         
+        # Construct a default name
         name = f"Compleo {model}" if model != "Unknown" else DEFAULT_NAME
         
+        # Use host_port as a unique ID to prevent duplicates
         await self.async_set_unique_id(f"{host}_{port}")
         self._abort_if_unique_id_configured()
 
+        # Store discovery info for the next step
         self._discovery_info = {
             CONF_HOST: host,
             CONF_PORT: port,
             CONF_NAME: name,
         }
 
+        # Update context to show the discovered name in the UI
         self.context.update({
             "title_placeholders": {"name": name}
         })
@@ -59,13 +67,19 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_discovery_confirm(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Confirm discovery."""
+        """
+        Confirm discovery.
+        
+        Shows a confirmation dialog to the user with the discovered data.
+        """
         if user_input is not None:
+            # User confirmed, proceed to creation
             return await self.async_step_user(user_input={
                 **self._discovery_info,
                 CONF_NAME: user_input.get(CONF_NAME, self._discovery_info[CONF_NAME])
             })
 
+        # Show the confirmation form
         return self.async_show_form(
             step_id="discovery_confirm",
             data_schema=vol.Schema({
@@ -80,11 +94,16 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle the initial step."""
+        """
+        Handle the initial step (manual setup).
+        
+        Also handles the final creation step from discovery.
+        """
         errors = {}
 
         if user_input is not None:
             host = user_input[CONF_HOST].strip()
+            # Clean up URL format if user accidentally entered http://
             if "://" in host:
                 host = host.split("://")[-1]
             
@@ -92,6 +111,7 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             port = user_input[CONF_PORT]
             name = user_input[CONF_NAME]
 
+            # Test the connection
             client = AsyncModbusTcpClient(host, port=port, timeout=5)
             try:
                 connected = await client.connect()
@@ -100,11 +120,11 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 else:
                     await asyncio.sleep(1)
                     
-                    # Verifizierungstest (optional, da wir via Zeroconf wissen, dass sie da ist)
-                    # Wir gehen hier direkt zum Erfolg, um Multihost-Probleme beim Setup zu umgehen
+                    # Set unique ID to prevent duplicates
                     await self.async_set_unique_id(f"{host}_{port}")
                     self._abort_if_unique_id_configured()
 
+                    # Connection successful, create the entry
                     return self.async_create_entry(
                         title=name,
                         data=user_input
@@ -115,6 +135,7 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             finally:
                 client.close()
 
+        # Show the form if we are here (either first run or error)
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema({
