@@ -30,13 +30,22 @@ async def async_setup_entry(
     
     sensors = []
     
-    # Safe access to data. If None, default to empty dict inside the structure.
-    # The coordinator __init__ now guarantees 'data' is a dict, but we double check.
+    # --- 1. System/Total Sensors ---
+    sys_sensors = [
+        ("total_power", "Total Power (Station)", UnitOfPower.WATT, SensorDeviceClass.POWER),
+        ("total_current_l1", "Total Current L1 (Station)", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT),
+        ("total_current_l2", "Total Current L2 (Station)", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT),
+        ("total_current_l3", "Total Current L3 (Station)", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT),
+    ]
+    
+    for key, name, unit, dev_class in sys_sensors:
+        sensors.append(
+            CompleoSystemSensor(coordinator, uid_prefix, key, name, unit, dev_class)
+        )
+
+    # --- 2. Point Sensors ---
     data = coordinator.data or {"points": {}}
     points_data = data.get("points", {})
-    
-    # If no points detected yet (e.g. startup fail), assume at least Point 1 exists
-    # so entities are created and show as "Unavailable" instead of missing.
     indices_to_create = points_data.keys() if points_data else [1]
 
     for point_index in indices_to_create:
@@ -49,18 +58,20 @@ async def async_setup_entry(
             ("current_l1", "Current L1", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
             ("current_l2", "Current L2", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
             ("current_l3", "Current L3", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
+            # NEW: Phase Switch Count
+            ("phase_switch_count", "Phase Switches (Session)", None, None, SensorStateClass.MEASUREMENT),
         ]
 
         for key, name, unit, dev_class, state_class in sensor_types:
             sensors.append(
-                CompleoSensor(
+                CompleoPointSensor(
                     coordinator, uid_prefix, point_index, key, name, 
                     unit, dev_class, state_class
                 )
             )
         
         sensors.append(
-            CompleoSensor(
+            CompleoPointSensor(
                 coordinator, uid_prefix, point_index, "status_code", "Status",
                 None, SensorDeviceClass.ENUM, None, icon="mdi:ev-station"
             )
@@ -68,9 +79,36 @@ async def async_setup_entry(
     
     async_add_entities(sensors)
 
+class CompleoSystemSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for Global Station Data (Sums)."""
+    
+    _attr_has_entity_name = True
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
-class CompleoSensor(CoordinatorEntity, SensorEntity):
-    """Representation of a Compleo Sensor for a specific Charging Point."""
+    def __init__(self, coordinator, uid_prefix, key, name, unit, device_class):
+        super().__init__(coordinator)
+        self._key = key
+        self._attr_name = name
+        self._attr_native_unit_of_measurement = unit
+        self._attr_device_class = device_class
+        self._attr_unique_id = f"{uid_prefix}_system_{key}"
+
+    @property
+    def native_value(self):
+        if not self.coordinator.data: return None
+        return self.coordinator.data.get("system", {}).get(self._key)
+
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self.coordinator.host)},
+            "name": self.coordinator.device_name,
+            "manufacturer": "Compleo",
+            "model": "Wallbox (System)",
+        }
+
+class CompleoPointSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for a specific Charging Point."""
 
     def __init__(self, coordinator, uid_prefix, point_index, key, name, unit=None, device_class=None, state_class=None, icon=None):
         super().__init__(coordinator)
@@ -90,26 +128,14 @@ class CompleoSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        """Return the current state of the sensor from coordinator data."""
-        # Safe navigation through the dictionary
-        if not self.coordinator.data:
-            return None
-            
+        if not self.coordinator.data: return None
         points = self.coordinator.data.get("points", {})
-        point_data = points.get(self._point_index, {})
-        val = point_data.get(self._key)
-        
-        if self._key == "status_code" and val is not None:
-            return str(val)
-            
-        return val
+        return points.get(self._point_index, {}).get(self._key)
 
     @property
     def device_info(self):
-        """Return device info."""
         main_device_id = (DOMAIN, self.coordinator.host)
         point_device_id = (DOMAIN, f"{self.coordinator.host}_lp{self._point_index}")
-        
         return {
             "identifiers": {point_device_id},
             "name": f"{self.coordinator.device_name} Point {self._point_index}",
