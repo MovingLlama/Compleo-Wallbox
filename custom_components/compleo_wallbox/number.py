@@ -19,22 +19,14 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """
-    Set up the Compleo number entities.
-    
-    Creates the global 'Charging Power Limit' entity.
-    """
+    """Set up the Compleo number entities."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
     uid_prefix = entry.unique_id or coordinator.host
     async_add_entities([CompleoPowerLimit(coordinator, uid_prefix)])
 
 
 class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
-    """
-    Representation of the Global Charging Power Limit.
-    
-    This belongs to the main device (Wallbox itself).
-    """
+    """Representation of the Charging Power Limit."""
 
     _attr_has_entity_name = True
     _attr_name = "Charging Power Limit"
@@ -46,17 +38,15 @@ class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
     _attr_icon = "mdi:speedometer"
 
     def __init__(self, coordinator, uid_prefix):
-        """Initialize the number entity."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{uid_prefix}_power_limit"
 
     @property
     def native_value(self):
-        """
-        Return the current value.
-        
-        Reads from 'system' -> 'power_setpoint_abs'.
-        """
+        """Return the current value."""
+        if not self.coordinator.data:
+            return None
+            
         system_data = self.coordinator.data.get("system", {})
         raw = system_data.get("power_setpoint_abs")
         if raw is not None:
@@ -65,22 +55,21 @@ class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
 
     @property
     def device_info(self):
-        """
-        Return device info for the Main Device.
-        """
-        # This uses the main device identifier
+        """Return device info."""
+        fw_ver = "Unknown"
+        if self.coordinator.data:
+            fw_ver = self.coordinator.data.get("system", {}).get("firmware_version", "Unknown")
+            
         return {
             "identifiers": {(DOMAIN, self.coordinator.host)},
             "name": self.coordinator.device_name,
             "manufacturer": "Compleo",
-            "sw_version": self.coordinator.data.get("system", {}).get("firmware_version", "Unknown"),
+            "sw_version": fw_ver,
             "model": "Wallbox (System)",
         }
 
     async def async_set_native_value(self, value: float) -> None:
-        """
-        Update the current value.
-        """
+        """Update the current value."""
         modbus_val = int(value / 100)
         
         try:
@@ -88,9 +77,8 @@ class CompleoPowerLimit(CoordinatorEntity, NumberEntity):
             
             if not self.coordinator.client.connected:
                 await self.coordinator.client.connect()
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.1)
 
-            # Write to Holding Register 0x0000 (Global)
             result = await self.coordinator.client.write_register(0x0000, modbus_val, **{param: 1})
             
             if result.isError():

@@ -26,12 +26,7 @@ PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.NUMBER]
 _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """
-    Set up Compleo Wallbox from a config entry.
-    
-    This function initializes the data coordinator and forwards the setup
-    to the sensor and number platforms.
-    """
+    """Set up Compleo Wallbox from a config entry."""
     host = entry.data[CONF_HOST]
     port = entry.data[CONF_PORT]
     name = entry.data.get(CONF_NAME, "Compleo Wallbox")
@@ -43,6 +38,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Perform the first refresh. We allow this to fail (e.g., if the wallbox is offline)
     # so that the integration is still loaded and can retry later.
+    # CRITICAL: We catch the exception so async_setup_entry returns True.
     try:
         await coordinator.async_config_entry_first_refresh()
     except Exception as e:
@@ -57,25 +53,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """
-    Unload a config entry.
-    
-    Closes the Modbus connection and removes the data from Home Assistant.
-    """
+    """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         coordinator = hass.data[DOMAIN].pop(entry.entry_id)
         if coordinator.client.connected:
             coordinator.client.close()
-            _LOGGER.debug("Modbus connection closed for %s", coordinator.host)
     return unload_ok
 
 class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
-    """
-    Class to manage fetching Compleo Wallbox data.
-    
-    Handles the Modbus connection and data retrieval logic.
-    Supports detecting multiple charging points (Solo/Duo).
-    """
+    """Class to manage fetching Compleo Wallbox data."""
 
     def __init__(self, hass: HomeAssistant, host: str, port: int, name: str) -> None:
         """Initialize the coordinator."""
@@ -83,8 +69,7 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         # Initialize Modbus client with a timeout
         self.client = AsyncModbusTcpClient(host, port=port, timeout=10)
         self.device_name = name
-        self.device_info_map = {} # Main device info
-        # Default parameter name for slave ID (changes based on pymodbus version)
+        self.device_info_map = {} 
         self._param_name = "slave" 
         
         super().__init__(
@@ -93,159 +78,131 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             name=f"{DOMAIN}_{host}",
             update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
         )
+        
+        # Initialize data structure immediately to prevent NoneType errors in sensors
+        # if the first update fails.
+        self.data = {
+            "system": {},
+            "points": {}
+        }
 
     async def _read_registers_safe(self, func_name, address, count, slave_id=1):
-        """
-        Helper to call Modbus read functions with automatic parameter detection.
-        """
+        """Helper to call Modbus read functions with automatic parameter detection."""
+        
+        # Ensure connection
         if not self.client.connected:
             _LOGGER.debug("Connecting to Modbus server at %s", self.host)
             await self.client.connect()
+            # Give the connection a moment to settle
+            await asyncio.sleep(0.1)
 
         func = getattr(self.client, func_name)
         
         # Try different parameter names for the slave ID
-        # (This logic helps compatibility with different pymodbus versions)
         for p_name in [self._param_name, "slave", "unit", "device_id"]:
             try:
                 kwargs = {p_name: slave_id}
-                _LOGGER.debug("Reading %s register(s) at address 0x%04x using %s=%s", count, address, p_name, slave_id)
+                
+                # Add a small delay before sending request (Message Wait)
+                await asyncio.sleep(0.05)
                 
                 result = await func(address, count, **kwargs)
                 
-                # If we get a valid response, remember the correct parameter name
                 if result is not None and not result.isError():
                     self._param_name = p_name
-                    # _LOGGER.debug("Read success: %s", result.registers)
                     return result
                 elif result is not None and result.isError():
                     _LOGGER.debug("Modbus error reading address 0x%04x: %s", address, result)
 
             except Exception as e:
                 _LOGGER.debug("Exception reading address 0x%04x with param %s: %s", address, p_name, e)
+                # Force reconnect on exception
+                self.client.close()
+                await asyncio.sleep(0.1)
+                await self.client.connect()
                 continue
                 
-        # Return None if all attempts fail
         _LOGGER.warning("Failed to read registers at address 0x%04x after trying all parameters", address)
         return None
 
     async def _read_charging_point_data(self, index: int) -> dict | None:
-        """
-        Read data for a specific charging point (1 or 2).
-        
-        Calculates offsets based on index:
-        LP1 starts at 0x1000
-        LP2 starts at 0x2000
-        """
+        """Read data for a specific charging point (1 or 2)."""
         base_address = index * 0x1000
         data = {}
 
-        _LOGGER.debug("Reading data for Charging Point %d (Base Address: 0x%04x)", index, base_address)
-
         # --- Block 1 (Inputs) ---
-        # 0xX001 to 0xX008 (Status, Power, Currents, Time, Energy)
-        # Skip 0xX009 (Holding Register - Mode)
         start_addr_1 = base_address + 0x001
         rr_block1 = await self._read_registers_safe("read_input_registers", start_addr_1, 8)
         
         if not rr_block1 or rr_block1.isError():
-            # If we can't read the first block of LP1, it's an error.
-            # If we can't read LP2, it probably just doesn't exist (Solo model).
-            _LOGGER.debug("Could not read Block 1 for Charging Point %d. It might not exist.", index)
             return None
 
         regs = rr_block1.registers
-        _LOGGER.debug("Charging Point %d Block 1 raw data: %s", index, regs)
-
         data["status_word"] = regs[0]
-        data["current_power"] = regs[1] * 100  # 100W steps -> Watt
-        data["current_l1"] = regs[2] * 0.1     # 0.1A steps -> Ampere
+        data["current_power"] = regs[1] * 100
+        data["current_l1"] = regs[2] * 0.1
         data["current_l2"] = regs[3] * 0.1
         data["current_l3"] = regs[4] * 0.1
-        # Energy at index 7 (Offset 8)
-        data["energy_total"] = regs[7] * 0.1   # 100Wh steps -> kWh
+        data["energy_total"] = regs[7] * 0.1
 
         # --- Block 2 (Inputs) ---
-        # 0xX00A to 0xX00F (Phase Switch, Errors, Status, Voltages)
         start_addr_2 = base_address + 0x00A
         rr_block2 = await self._read_registers_safe("read_input_registers", start_addr_2, 6)
         
         if rr_block2 and not rr_block2.isError():
             regs = rr_block2.registers
-            _LOGGER.debug("Charging Point %d Block 2 raw data: %s", index, regs)
-
-            data["status_code"] = regs[2] # Offset C
-            data["voltage_l1"] = regs[3]  # Offset D
-            data["voltage_l2"] = regs[4]  # Offset E
-            data["voltage_l3"] = regs[5]  # Offset F
+            data["status_code"] = regs[2]
+            data["voltage_l1"] = regs[3]
+            data["voltage_l2"] = regs[4]
+            data["voltage_l3"] = regs[5]
         else:
-            # Should not happen if Block 1 worked, but fill with 0/None to be safe
-            _LOGGER.warning("Read Block 1 but failed Block 2 for Point %d. Using zeroes.", index)
             data.update({"status_code": 0, "voltage_l1": 0, "voltage_l2": 0, "voltage_l3": 0})
 
         return data
 
     async def _async_update_data(self):
-        """
-        Fetch data from the wallbox.
-        
-        Structure:
-        {
-            "system": { ... global data ... },
-            "points": {
-                1: { ... LP1 data ... },
-                2: { ... LP2 data ... } (if available)
-            }
-        }
-        """
+        """Fetch data from the wallbox."""
         try:
-            _LOGGER.debug("Starting update for Compleo Wallbox")
-            full_data = {
+            # We build a temporary dict so we don't overwrite self.data with partial trash if it fails halfway
+            new_data = {
                 "system": {},
                 "points": {}
             }
             
-            # --- 1. System Info (Firmware) ---
-            # Register 0x0006 = Firmware Patch, 0x0007 = Major/Minor
+            # --- 1. System Info ---
             rr_sys = await self._read_registers_safe("read_input_registers", 0x0006, 2)
             if rr_sys and not rr_sys.isError():
                 major = rr_sys.registers[1] >> 8
                 minor = rr_sys.registers[1] & 0xFF
                 patch = rr_sys.registers[0] >> 8
-                fw_version = f"{major}.{minor}.{patch}"
-                full_data["system"]["firmware_version"] = fw_version
-                _LOGGER.debug("Firmware Version: %s", fw_version)
+                new_data["system"]["firmware_version"] = f"{major}.{minor}.{patch}"
 
-            # --- 2. Global Holding (Power Setpoint) ---
-            # Register 0x0000
+            # --- 2. Global Holding ---
             rr_hold = await self._read_registers_safe("read_holding_registers", 0x0000, 1)
             if rr_hold and not rr_hold.isError():
-                full_data["system"]["power_setpoint_abs"] = rr_hold.registers[0]
-                _LOGGER.debug("Power Setpoint: %s (x100W)", rr_hold.registers[0])
+                new_data["system"]["power_setpoint_abs"] = rr_hold.registers[0]
 
             # --- 3. Charging Points ---
-            # Try to read LP1 and LP2
-            
-            # Read LP1
             lp1_data = await self._read_charging_point_data(1)
             if lp1_data:
-                full_data["points"][1] = lp1_data
+                new_data["points"][1] = lp1_data
             else:
-                # If LP1 fails, the whole device is probably unreachable
-                _LOGGER.error("Failed to read Charging Point 1. Aborting update.")
-                raise UpdateFailed("Could not read data from Charging Point 1")
+                # If LP1 fails, assume communication error, but don't crash entirely.
+                # Just return what we have (or raise specific error to trigger retry)
+                _LOGGER.warning("Could not read Charging Point 1 data.")
+                # If we have NO data at all, raise UpdateFailed
+                if not new_data["system"]:
+                     raise UpdateFailed("Communication lost")
 
-            # Read LP2 (Optional)
             lp2_data = await self._read_charging_point_data(2)
             if lp2_data:
-                full_data["points"][2] = lp2_data
-                _LOGGER.debug("Charging Point 2 found.")
-            else:
-                _LOGGER.debug("Charging Point 2 not found (Solo or offline).")
+                new_data["points"][2] = lp2_data
 
-            _LOGGER.debug("Update finished successfully.")
-            return full_data
+            return new_data
 
         except Exception as err:
             _LOGGER.error("Error updating Compleo data: %s", err)
+            # If update fails, return the LAST KNOWN GOOD data if available, 
+            # or the empty structure (via self.data access in sensor)
+            # Raising UpdateFailed makes the entities 'unavailable' which is correct.
             raise UpdateFailed(f"Communication error: {err}")
