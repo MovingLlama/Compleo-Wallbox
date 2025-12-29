@@ -57,8 +57,8 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         self.client = AsyncModbusTcpClient(host, port=port, timeout=5)
         self.device_name = name
         self.device_info_map = {} 
-        # We start with 'slave' but will auto-switch to 'unit' if TypeError occurs
-        self._param_name = "slave" 
+        # Start with None as default since slave/unit seem unsupported in logs
+        self._param_name = None
         
         super().__init__(
             hass,
@@ -83,57 +83,66 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         func = getattr(self.client, func_name)
         
         # 2. Determine parameters to try
-        params_to_try = []
+        # Priority: Cached param -> 'slave' -> 'unit' -> None (fallback)
+        params_to_test = []
         if self._param_name:
-            params_to_try.append(self._param_name)
+            params_to_test.append(self._param_name)
         
-        if "slave" not in params_to_try: params_to_try.append("slave")
-        if "unit" not in params_to_try: params_to_try.append("unit")
+        # Based on logs, 'slave' and 'unit' fail, so we put None higher priority or just ensure it's tested
+        if "slave" not in params_to_test: params_to_test.append("slave")
+        if "unit" not in params_to_test: params_to_test.append("unit")
+        if None not in params_to_test: params_to_test.append(None)
         
-        # Fallback: Try without any keyword argument (None)
-        if None not in params_to_try: params_to_try.append(None)
-
         last_error = None
 
-        for param in params_to_try:
+        for param_key in params_to_test:
             try:
-                if param is not None:
-                    kwargs = {param: slave_id}
-                else:
-                    kwargs = {}
-
-                result = await func(address, count, **kwargs)
+                # CRITICAL FIX: Always pass 'count' as a keyword argument!
+                # The logs showed that passing it positionally causes "takes 2 but 3 given".
+                kwargs = {"count": count}
                 
-                # Check if result indicates success (not None/Error)
+                if param_key is not None:
+                    kwargs[param_key] = slave_id
+                
+                # Call function with address (positional) and rest as kwargs
+                result = await func(address, **kwargs)
+                
+                # Check result
                 if result is None or (hasattr(result, 'isError') and result.isError()):
-                    # Valid call syntax (no TypeError), but Modbus logic error/timeout.
+                    # Functional failure (timeout, modbus exception)
+                    # This implies the arguments were accepted (no TypeError)
                     
-                    if param is not None:
-                        self._param_name = param
-                    
+                    if param_key is not None:
+                        self._param_name = param_key
+                        
                     if result is None:
-                        _LOGGER.debug("Read None (Timeout?) with param '%s' at 0x%04x", param, address)
+                        _LOGGER.debug("Read None (Timeout?) with param '%s' at 0x%04x", param_key, address)
                     else:
-                         _LOGGER.debug("Modbus Error with param '%s' at 0x%04x: %s", param, address, result)
-                         
-                    return result 
+                        _LOGGER.debug("Modbus Error with param '%s' at 0x%04x: %s", param_key, address, result)
+                    
+                    # Return the error result, don't retry other params for functional errors
+                    return result
 
                 # Success
-                if param is not None:
-                    self._param_name = param
+                if param_key is not None:
+                    self._param_name = param_key
+                elif self._param_name is None:
+                    # If None worked, keep it as preferred
+                    self._param_name = None
+                    
                 return result
 
             except TypeError as te:
-                # THIS catches the specific "unexpected keyword argument" error
-                _LOGGER.warning("Pymodbus keyword '%s' not supported: %s. Trying next...", param, te)
+                # This catches unexpected keyword arguments
+                _LOGGER.debug("Argument error with param '%s': %s. Trying next...", param_key, te)
+                last_error = te
                 continue
                 
             except Exception as e:
-                _LOGGER.warning("Exception reading 0x%04x with param '%s': %s", address, param, e)
+                _LOGGER.warning("Exception reading 0x%04x with param '%s': %s", address, param_key, e)
                 last_error = e
                 continue
 
-        # If we exhausted all options
         _LOGGER.error("Failed to read 0x%04x. All params failed. Last error: %s", address, last_error)
         return None
 
@@ -191,7 +200,6 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             if rr_hold and not (hasattr(rr_hold, 'isError') and rr_hold.isError()):
                 new_data["system"]["power_setpoint_abs"] = rr_hold.registers[0]
             else:
-                 # If probe fails, raise error to mark availability
                  raise UpdateFailed(f"Could not read Global Register 0x0000. Result: {rr_hold}")
 
             # --- 1. System Info ---
