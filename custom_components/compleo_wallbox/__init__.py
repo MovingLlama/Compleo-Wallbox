@@ -121,10 +121,9 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
 
         return None
 
-    async def _read_string(self, address, count) -> str | None:
-        """Helper to read a string from registers."""
-        rr = await self._read_registers_safe("read_input_registers", address, count)
-        if rr and not (hasattr(rr, 'isError') and rr.isError()) and len(rr.registers) == count:
+    def _decode_registers_to_string(self, rr, count) -> str | None:
+        """Decodes register result to ascii string."""
+        if rr and not (hasattr(rr, 'isError') and rr.isError()) and hasattr(rr, 'registers') and len(rr.registers) == count:
             try:
                 # Convert registers to string (2 chars per register)
                 s = b""
@@ -132,11 +131,27 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                     s += reg.to_bytes(2, 'big')
                 # Decode and strip null bytes / spaces
                 val = s.decode('ascii', errors='ignore').rstrip('\x00').strip()
-                if val:
+                # Filter out garbage or empty strings
+                if val and len(val) > 1:
                     return val
             except Exception:
                 pass
         return None
+
+    async def _read_string(self, address, count) -> str | None:
+        """Helper to read a string from registers (tries Input then Holding)."""
+        
+        # 1. Try Input Registers (Standard)
+        rr = await self._read_registers_safe("read_input_registers", address, count)
+        val = self._decode_registers_to_string(rr, count)
+        if val:
+            return val
+            
+        # 2. Fallback: Try Holding Registers (Legacy/Some Models)
+        rr_hold = await self._read_registers_safe("read_holding_registers", address, count)
+        val = self._decode_registers_to_string(rr_hold, count)
+        
+        return val
 
     async def _read_charging_point_data(self, index: int) -> dict | None:
         """Read data for a specific charging point."""
@@ -218,11 +233,11 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                 new_data["system"]["firmware_version"] = f"{major}.{minor}.{patch}"
 
             # 3. Strings (Article/Serial)
-            # Article Number often 0x0020
+            # Article Number often 0x0020 (Length 10)
             art_num = await self._read_string(0x0020, 10)
             if art_num: new_data["system"]["article_number"] = art_num
             
-            # Serial Number often 0x0030
+            # Serial Number often 0x0030 (Length 10)
             ser_num = await self._read_string(0x0030, 10)
             if ser_num: new_data["system"]["serial_number"] = ser_num
 
