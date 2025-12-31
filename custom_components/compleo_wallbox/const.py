@@ -23,11 +23,11 @@ REG_SYS_SERIAL_NUM = 0x0030   # Startadresse String
 # Basis-Adresse für den ersten Ladepunkt (LP1).
 # Compleo Duo/Cito/Pro: meist 0x1000
 # Compleo Solo (Legacy): meist 0x0000
-ADDR_LP1_BASE = 0x1000
+ADDR_LP1_BASE = 0x0100
 
 # Basis-Adresse für den zweiten Ladepunkt (LP2)
 # Compleo Duo: meist 0x2000
-ADDR_LP2_BASE = 0x2000
+ADDR_LP2_BASE = 0x0200
 
 # --- LADEPUNKTE OFFSETS ---
 # Diese Offsets werden zur Basis-Adresse addiert.
