@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import asyncio
 from homeassistant.components.number import NumberEntity, NumberDeviceClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfPower, UnitOfElectricCurrent
@@ -30,21 +29,21 @@ async def async_setup_entry(
     
     entities = []
     
-    # 1. Global Station Power Limit
+    # 1. Global Station Power Limit (Watt, factor 100)
     entities.append(CompleoNumber(
         coordinator, uid_prefix, "power_setpoint_abs", "Station Power Limit", 
         REG_SYS_POWER_LIMIT, UnitOfPower.WATT, NumberDeviceClass.POWER,
         0, 44000, 100, 100
     ))
 
-    # 2. Max Schieflast
+    # 2. Max Schieflast (Ampere, factor 0.1 -> divide by 0.1 equals multiply by 10)
     entities.append(CompleoNumber(
         coordinator, uid_prefix, "max_schieflast", "Max Unbalanced Load", 
         REG_SYS_MAX_SCHIEFLAST, UnitOfElectricCurrent.AMPERE, NumberDeviceClass.CURRENT,
         6, 32, 0.1, 0.1
     ))
 
-    # 3. Fallback Power
+    # 3. Fallback Power (Watt, factor 100)
     entities.append(CompleoNumber(
         coordinator, uid_prefix, "fallback_power", "Fallback Power", 
         REG_SYS_FALLBACK_POWER, UnitOfPower.WATT, NumberDeviceClass.POWER,
@@ -91,17 +90,19 @@ class CompleoNumber(CoordinatorEntity, NumberEntity):
         }
 
     async def async_set_native_value(self, value: float) -> None:
-        # Convert back to register value
+        # Conversion:
+        # If multiplier is 100 (W) -> value / 100
+        # If multiplier is 0.1 (A) -> value / 0.1 (same as value * 10)
         modbus_val = int(value / self._multiplier)
         
         try:
-            # Use the coordinator's helper method to handle slave/unit strategy
+            # Call the new robust write function
             result = await self.coordinator.async_write_register(self._register, modbus_val)
             
-            if result is not None and not result.isError():
+            if result is not None and not (hasattr(result, 'isError') and result.isError()):
                 await self.coordinator.async_request_refresh()
             else:
-                _LOGGER.error("Error writing to Compleo: %s", result)
+                _LOGGER.error("Error writing to Compleo at 0x%04x: %s", self._register, result)
                 
         except Exception as err:
-            _LOGGER.error("Error writing to Compleo: %s", err)
+            _LOGGER.error("Exception writing to Compleo: %s", err)

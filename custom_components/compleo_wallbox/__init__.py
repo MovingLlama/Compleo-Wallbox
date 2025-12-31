@@ -144,28 +144,63 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         return None
 
     async def async_write_register(self, address, value, slave_id=1):
-        """Public helper to write a register using the discovered strategy."""
+        """Public helper to write a register trying multiple strategies."""
         if not self.client.connected:
             await self.client.connect()
             await asyncio.sleep(0.1)
 
-        kwargs = {}
+        # Helper to execute write
+        async def try_write(kwargs):
+             return await self.client.write_register(address, value, **kwargs)
+
+        # 1. Try strategy derived from reading
         if self._strategy_name:
+            kwargs = {}
             if "slave" in self._strategy_name:
                 kwargs["slave"] = slave_id
             elif "unit" in self._strategy_name:
                 kwargs["unit"] = slave_id
-        else:
-            kwargs["slave"] = slave_id
+            # else: no keyword
+            
+            try:
+                result = await try_write(kwargs)
+                if result and not (hasattr(result, 'isError') and result.isError()):
+                    return result
+                # If error but not TypeError, return it (device rejected value)
+                if result and hasattr(result, 'isError') and result.isError():
+                    _LOGGER.warning("Write rejected by device at 0x%04x: %s", address, result)
+                    return result
+            except TypeError:
+                pass # Strategy failed, try fallbacks
+            except Exception as e:
+                _LOGGER.error("Exception writing 0x%04x: %s", address, e)
+                return None
 
-        try:
-            return await self.client.write_register(address, value, **kwargs)
-        except TypeError:
-            if "slave" in kwargs:
-                kwargs.pop("slave")
-                kwargs["unit"] = slave_id
-                return await self.client.write_register(address, value, **kwargs)
-            raise
+        # 2. Fallback: Try all variations
+        strategies = [
+            {"slave": slave_id},
+            {"unit": slave_id},
+            {} # No kwargs
+        ]
+        
+        last_error = None
+        for kwargs in strategies:
+            try:
+                result = await try_write(kwargs)
+                if result and not (hasattr(result, 'isError') and result.isError()):
+                    return result
+                if result and hasattr(result, 'isError') and result.isError():
+                     _LOGGER.warning("Write error (kwargs=%s): %s", kwargs, result)
+                     return result # Functional error
+            except TypeError as te:
+                last_error = te
+                continue
+            except Exception as e:
+                last_error = e
+                continue
+
+        _LOGGER.error("Failed to write to 0x%04x. All params failed. Last error: %s", address, last_error)
+        return None
 
     def _decode_registers_to_string(self, rr, count) -> str | None:
         if rr and not (hasattr(rr, 'isError') and rr.isError()) and hasattr(rr, 'registers'):
@@ -262,7 +297,7 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             if rr and not (hasattr(rr, 'isError') and rr.isError()) and len(rr.registers) > 0:
                 new_data["system"]["fallback_power"] = rr.registers[0]
 
-            # 2. System Info / Inputs (Firmware, Total Power, Currents)
+            # 2. System Info / Inputs
             rr_sys = await self._read_registers_safe("read_input_registers", REG_SYS_FW_PATCH, 2)
             if rr_sys and not (hasattr(rr_sys, 'isError') and rr_sys.isError()) and len(rr_sys.registers) >= 2:
                 patch = rr_sys.registers[0] >> 8 
@@ -270,25 +305,20 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                 minor = rr_sys.registers[1] & 0xFF
                 new_data["system"]["firmware_version"] = f"{major}.{minor}.{patch}"
 
-            # Read Global Input Block (0x0009 - 0x000D) - 5 registers
+            # Read Global Input Block
             rr_ins = await self._read_registers_safe("read_input_registers", REG_SYS_TOTAL_POWER_READ, 5)
             if rr_ins and not (hasattr(rr_ins, 'isError') and rr_ins.isError()) and len(rr_ins.registers) >= 5:
-                # 0x0009: Total Power
-                new_data["system"]["total_power"] = rr_ins.registers[0] * 100 # Annahme 100W Schritte
-                # 0x000A: Total Current L1
-                new_data["system"]["total_current_l1"] = rr_ins.registers[1] * 0.1 # Annahme 0.1A
-                # 0x000B: Total Current L2
+                new_data["system"]["total_power"] = rr_ins.registers[0] * 100 
+                new_data["system"]["total_current_l1"] = rr_ins.registers[1] * 0.1 
                 new_data["system"]["total_current_l2"] = rr_ins.registers[2] * 0.1
-                # 0x000C: Total Current L3
                 new_data["system"]["total_current_l3"] = rr_ins.registers[3] * 0.1
-                # 0x000D: Unused Power
-                new_data["system"]["unused_power"] = rr_ins.registers[4] * 100 # Annahme 100W
+                new_data["system"]["unused_power"] = rr_ins.registers[4] * 100 
 
-            # RFID Tag separate read (if string)
+            # RFID
             rfid = await self._read_string(REG_SYS_RFID_TAG, 10, "RFID")
             if rfid: new_data["system"]["rfid_tag"] = rfid
 
-            # 3. Strings (Article/Serial)
+            # 3. Strings
             art_num = await self._read_string(REG_SYS_ARTICLE_NUM, LEN_STRING_REGISTERS, "Article Num")
             if art_num: new_data["system"]["article_number"] = art_num
             
@@ -305,7 +335,7 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                 if lp2_data:
                     new_data["points"][2] = lp2_data
 
-            # Check if we have any data
+            # Check for data
             if not new_data["points"] and not new_data["system"]:
                  raise UpdateFailed("No data received from Wallbox")
 

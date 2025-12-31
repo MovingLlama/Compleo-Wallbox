@@ -85,15 +85,10 @@ class CompleoPhaseMode(CoordinatorEntity, SelectEntity):
             return
 
         try:
-            param = self.coordinator._param_name or "slave"
-            if not self.coordinator.client.connected:
-                await self.coordinator.client.connect()
-                await asyncio.sleep(0.1)
+            # Use the new robust write function
+            result = await self.coordinator.async_write_register(self._register, value)
             
-            kwargs = {param: 1}
-            result = await self.coordinator.client.write_register(self._register, value, **kwargs)
-            
-            if not result.isError():
+            if result is not None and not (hasattr(result, 'isError') and result.isError()):
                 await self.coordinator.async_request_refresh()
             else:
                 _LOGGER.error("Failed to set phase mode: %s", result)
