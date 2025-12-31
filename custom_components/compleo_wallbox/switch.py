@@ -7,7 +7,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, ADDR_LP1_BASE, ADDR_LP2_BASE, OFFSET_PHASE_MODE
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     coordinator = hass.data[DOMAIN][entry.entry_id]
@@ -23,9 +23,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     async_add_entities(entities)
 
 class CompleoZoeSwitch(CoordinatorEntity, SwitchEntity):
-    """Switch to enable Zoe Alternative Logic."""
+    """Switch to enable Alternative Logic (e.g. for Zoe)."""
     _attr_has_entity_name = True
-    _attr_name = "ALT Mode (Zoe)"
+    _attr_name = "ALT Mode"
     _attr_icon = "mdi:car-electric"
 
     def __init__(self, coordinator, uid_prefix, point_index):
@@ -44,6 +44,13 @@ class CompleoZoeSwitch(CoordinatorEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs):
         self.coordinator.logic.update_input(self._point_index, "zoe_mode", False)
+        
+        # Reset Phase Mode to Automatic (1) when disabling ALT Mode
+        base = ADDR_LP1_BASE if self._point_index == 1 else ADDR_LP2_BASE
+        if base is not None:
+             # 1 = Automatic
+             await self.coordinator.async_write_register(base + OFFSET_PHASE_MODE, 1)
+
         self.async_write_ha_state()
         await self.coordinator.async_request_refresh()
 

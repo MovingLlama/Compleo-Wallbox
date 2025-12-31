@@ -13,7 +13,7 @@ Diese Integration verwandelt deine Wallbox in einen intelligenten Energiemanager
   * **Schnellladen:** Maximale Power auf Knopfdruck.  
   * **Begrenzt:** Manuell einstellbares Limit (z.B. 3.6 kW).  
   * **Solar:** Dynamische Regelung basierend auf PV-Überschuss.  
-* **Zoe-Modus (ALT Mode):** Spezielle Hysterese- und Umschaltlogik für Fahrzeuge mit hohem Mindestladestrom.  
+* **ALT Mode (Alternativ-Modus):** Spezielle Hysterese- und Umschaltlogik für Fahrzeuge mit hohem Mindestladestrom (z.B. Renault Zoe).  
 * **Robustheit:** "Brute-Force" Modbus-Kommunikation, die auch mit älteren Firmware-Versionen oder zickigen Schnittstellen zurechtkommt.
 
 ## **🔋 Smart Charging Modi**
@@ -35,20 +35,22 @@ Die Wallbox regelt die Leistung dynamisch basierend auf dem verfügbaren Übersc
 * **Voraussetzung:** Du musst den aktuellen PV-Überschuss (in Watt) zyklisch in die Entität number.compleo\_lpX\_input\_solar\_excess schreiben (siehe Automatisierung unten).  
 * **Puffer:** Es werden standardmäßig 500W vom Überschuss abgezogen, um Netzbezug zu vermeiden.
 
-## **🚗 Zoe-Modus (ALT Mode)**
+## **🚗 ALT Mode (Alternativ / Zoe)**
 
-Aktivierbar über den Schalter **"ALT Mode (Zoe)"**.
+Aktivierbar über den Schalter **"ALT Mode"**.
 
-Dieser Modus ist für Fahrzeuge gedacht, die einen hohen Mindestladestrom benötigen (z.B. Renault Zoe: min. 8A bis 10A) oder empfindlich auf häufige Schaltvorgänge reagieren.
+Dieser Modus ist speziell für Elektrofahrzeuge entwickelt, die "zickig" beim Laden sind oder hohe Mindestströme benötigen. Ein prominentes Beispiel hierfür ist die Renault Zoe.  
+Die Renault Zoe (und einige andere Smart/Twingo Modelle) benötigt oft mindestens 8A bis 10A Ladestrom, um effizient und fehlerfrei zu laden, unabhängig ob 1- oder 3-phasig.  
+**Funktionsweise im Solar-Modus mit aktivem ALT Mode:**
 
-**Funktionsweise im Solar-Modus:**
-
-1. **Phasen-Management:** Solange der Solarüberschuss nicht für 3-phasiges Laden mit Mindeststrom reicht (z.B. 3 \* 230V \* 8A \= ca. 5.5 kW), wird **1-phasiges Laden** erzwungen. Erst wenn der Überschuss stabil darüber liegt, wird auf 3 Phasen geschaltet.  
-2. **Mindeststrom:** Einstellbar über **"Config: Zoe Min Amps"** (Standard 8A).  
+1. **Phasen-Management:** Solange der Solarüberschuss nicht für 3-phasiges Laden mit dem eingestellten Mindeststrom reicht (z.B. 3 \* 230V \* 8A \= ca. 5.5 kW), wird **1-phasiges Laden** erzwungen. Erst wenn der Überschuss stabil darüber liegt, wird auf 3 Phasen geschaltet.  
+2. **Mindeststrom:** Einstellbar über **"Config: Min Amps (ALT)"** (Standard 8A). Hier stellst du ein, was dein Auto mindestens braucht (Zoe meist 8-10A).  
 3. **Intelligente Hysterese (Schwankungs-Glättung):**  
-   * **Strom steigt:** Der Ladestrom wird erst erhöht, wenn der neue Wert für **20 Minuten** stabil verfügbar war (verhindert Hochregeln bei kurzen Wolkenlücken).  
+   * **Strom steigt:** Der Ladestrom wird erst erhöht, wenn der neue Wert für **20 Minuten** stabil verfügbar war (verhindert ständiges Hochregeln bei kurzen Wolkenlücken, was die Zoe Ladeelektronik schonen soll).  
    * **Strom sinkt (leicht):** Der Ladestrom wird für **15 Minuten** gehalten, bevor er reduziert wird.  
    * **Strom bricht ein:** Fällt der Überschuss um mehr als **10%**, wird die Leistung **sofort** reduziert, um Netzbezug zu verhindern.
+
+**Wichtig:** Wenn der ALT Mode deaktiviert wird, stellt die Integration den Phasenmodus automatisch wieder auf "Automatisch" zurück.
 
 ## **🛠️ Einrichtung & Konfiguration**
 
@@ -104,9 +106,9 @@ mode: single
 | **Sensor** | LP1 Status / Error | Text-Status (z.B. "Charging", "OverTemp") |
 | **Select** | LP1 Charging Mode | Modus-Wahl: Fast / Limited / Solar |
 | **Select** | LP1 Phase Mode | Hardware-Umschaltung: Auto / 1-Phase / 3-Phase |
-| **Switch** | LP1 ALT Mode (Zoe) | Aktiviert die Zoe-Logik |
+| **Switch** | LP1 ALT Mode | Aktiviert die Zoe-Logik |
 | **Number** | LP1 Config: Limited Mode | Watt-Limit für den "Limited" Modus |
-| **Number** | LP1 Config: Zoe Min Amps | Mindeststrom für Zoe-Logik (z.B. 8A) |
+| **Number** | LP1 Config: Min Amps (ALT) | Mindeststrom für Zoe-Logik (z.B. 8A) |
 | **Number** | LP1 Input: Solar Excess | **Hier** muss der PV-Überschuss rein |
 
 ## **Fehlerbehebung**

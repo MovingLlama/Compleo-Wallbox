@@ -38,7 +38,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         # Virtual Logic Inputs
         entities.append(CompleoVirtualNumber(coordinator, uid_prefix, idx, "solar_excess", "Input: Solar Excess", UnitOfPower.WATT, NumberDeviceClass.POWER, 0, 30000, 100))
         entities.append(CompleoVirtualNumber(coordinator, uid_prefix, idx, "manual_limit", "Config: Limited Mode", UnitOfPower.WATT, NumberDeviceClass.POWER, 0, 22000, 100))
-        entities.append(CompleoVirtualNumber(coordinator, uid_prefix, idx, "zoe_min_current", "Config: Zoe Min Amps", UnitOfElectricCurrent.AMPERE, NumberDeviceClass.CURRENT, 6, 16, 1))
+        # Renamed from "Config: Zoe Min Amps" to "Config: Min Amps (ALT)"
+        entities.append(CompleoVirtualNumber(coordinator, uid_prefix, idx, "zoe_min_current", "Config: Min Amps (ALT)", UnitOfElectricCurrent.AMPERE, NumberDeviceClass.CURRENT, 6, 16, 1))
 
     async_add_entities(entities)
 
