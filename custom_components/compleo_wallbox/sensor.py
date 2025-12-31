@@ -38,6 +38,9 @@ async def async_setup_entry(
         ("total_current_l2", "Total Current L2", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
         ("total_current_l3", "Total Current L3", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
         ("unused_power", "Unused Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT),
+        # New Sums
+        ("total_energy_session", "Station Energy (Session)", UnitOfEnergy.KILO_WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING),
+        ("total_energy_total", "Station Energy (Lifetime)", UnitOfEnergy.KILO_WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING),
     ]
     for key, name, unit, dev_class, state_class in sys_sensors:
         sensors.append(
@@ -52,7 +55,11 @@ async def async_setup_entry(
     for point_index in indices:
         point_sensors = [
             ("current_power", "Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT),
-            ("energy_total", "Total Energy", UnitOfEnergy.KILO_WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING),
+            # Renamed energy_total -> energy_session to be clearer, but keeping key similar in HA
+            ("energy_session", "Energy (Session)", UnitOfEnergy.KILO_WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING),
+            # New Lifetime Counter
+            ("meter_reading", "Total Energy (Lifetime)", UnitOfEnergy.KILO_WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING),
+            
             ("voltage_l1", "Voltage L1", UnitOfElectricPotential.VOLT, SensorDeviceClass.VOLTAGE, SensorStateClass.MEASUREMENT),
             ("voltage_l2", "Voltage L2", UnitOfElectricPotential.VOLT, SensorDeviceClass.VOLTAGE, SensorStateClass.MEASUREMENT),
             ("voltage_l3", "Voltage L3", UnitOfElectricPotential.VOLT, SensorDeviceClass.VOLTAGE, SensorStateClass.MEASUREMENT),
@@ -60,7 +67,6 @@ async def async_setup_entry(
             ("current_l2", "Current L2", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
             ("current_l3", "Current L3", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
             ("phase_switch_count", "Phase Switches", None, None, SensorStateClass.MEASUREMENT),
-            # Numeric Charging Time (Seconds) - allows HA frontend conversion
             ("charging_time", "Charging Time", UnitOfTime.SECONDS, SensorDeviceClass.DURATION, SensorStateClass.MEASUREMENT),
         ]
 

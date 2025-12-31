@@ -47,6 +47,7 @@ from .const import (
     OFFSET_VOLTAGE_L3,
     OFFSET_PHASE_MODE,
     OFFSET_RFID_TAG,
+    OFFSET_METER_READING,
     OFFSET_DERATING_STATUS
 )
 
@@ -148,46 +149,33 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         return None
 
     async def async_write_register(self, address, value, slave_id=1):
-        """
-        Public helper to write a register.
-        It forcefully tries all variants (slave, unit, None) until one succeeds or all fail.
-        This fixes the issue where read strategy might differ from write strategy or exceptions are raised.
-        """
+        """Public helper to write a register."""
         if not self.client.connected:
             await self.client.connect()
             await asyncio.sleep(0.1)
 
-        # Helper for a single attempt
         async def attempt(kwargs_dict):
             return await self.client.write_register(address, value, **kwargs_dict)
 
-        # Strategies to try in order
         attempts = [
-            {"slave": slave_id}, # Try standard first
-            {"unit": slave_id},  # Try legacy unit
-            {}                   # Try without ID (likely what works for you)
+            {"slave": slave_id}, 
+            {"unit": slave_id}, 
+            {} 
         ]
 
         last_error = None
         for kwargs in attempts:
             try:
                 result = await attempt(kwargs)
-                
-                # Success check
                 if result and not (hasattr(result, 'isError') and result.isError()):
-                    return result # Success!
-                
-                # If we get a functional Modbus error (not TypeError), log it but maybe stop?
+                    return result 
                 if result and hasattr(result, 'isError') and result.isError():
                      _LOGGER.warning("Write rejected by device (params: %s): %s", kwargs, result)
-                     return result # Return the error response
-
+                     return result 
             except TypeError as te:
-                # This parameter signature is invalid for this pymodbus version
                 last_error = te
                 continue
             except Exception as e:
-                # Other errors
                 last_error = e
                 continue
 
@@ -229,7 +217,6 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         elif index == 2:
             base_address = ADDR_LP2_BASE
         
-        # If address is None (disabled in const.py), skip
         if base_address is None:
             return None
         
@@ -239,19 +226,14 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         addr_hold_0 = base_address + OFFSET_MAX_POWER
         rr_hold = await self._read_registers_safe("read_holding_registers", addr_hold_0, 10)
         if rr_hold and not (hasattr(rr_hold, 'isError') and rr_hold.isError()) and len(rr_hold.registers) >= 10:
-             # Offset 0: Max Power
              data["max_power_limit"] = rr_hold.registers[0]
-             # Offset 9: Phase Mode
              data["phase_mode"] = rr_hold.registers[9]
 
-        # 2. INPUT Block 1: Status, Power, Currents, Time, Energy (0x1 .. 0x8)
+        # 2. INPUT Block 1: Status, Power, Currents, Time, Energy Session (0x1 .. 0x8)
         start_addr_1 = base_address + OFFSET_STATUS_WORD
         rr_block1 = await self._read_registers_safe("read_input_registers", start_addr_1, 8)
         
-        if not rr_block1 or (hasattr(rr_block1, 'isError') and rr_block1.isError()):
-            # Partial fail safe
-            pass
-        else:
+        if rr_block1 and not (hasattr(rr_block1, 'isError') and rr_block1.isError()):
             regs = rr_block1.registers
             if len(regs) >= 8:
                 data["status_word"] = regs[0]
@@ -259,9 +241,8 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                 data["current_l1"] = regs[2] * 0.1    
                 data["current_l2"] = regs[3] * 0.1
                 data["current_l3"] = regs[4] * 0.1
-                # Index 5 corresponds to Offset 6 (0x1 + 5 = 0x6) -> Charging Time
                 data["charging_time"] = regs[5]
-                data["energy_total"] = regs[7] * 0.1  
+                data["energy_session"] = regs[7] * 0.1 # War energy_total, jetzt Session
 
         # 3. INPUT Block 2: Phase Switches, Error, Status, Voltages (0xA .. 0xF)
         start_addr_2 = base_address + OFFSET_PHASE_SWITCHES
@@ -272,20 +253,27 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         if rr_block2 and not (hasattr(rr_block2, 'isError') and rr_block2.isError()):
             regs = rr_block2.registers
             if len(regs) >= 6:
-                data["phase_switch_count"] = regs[0] # 0xA
-                data["error_code"] = regs[1]         # 0xB
-                data["status_code"] = regs[2]        # 0xC
+                data["phase_switch_count"] = regs[0]
+                data["error_code"] = regs[1]
+                data["status_code"] = regs[2]
                 data["voltage_l1"] = regs[3]
                 data["voltage_l2"] = regs[4]
                 data["voltage_l3"] = regs[5]
 
-        # 4. RFID (0x10, Length 10)
+        # 4. RFID (0x10)
         addr_rfid = base_address + OFFSET_RFID_TAG
         rfid_val = await self._read_string(addr_rfid, 10, f"LP{index} RFID")
         if rfid_val:
             data["rfid_tag"] = rfid_val
 
-        # 5. Derating (0x1A)
+        # 5. Meter Reading (Lifetime) (0x18) - NEU
+        addr_meter = base_address + OFFSET_METER_READING
+        rr_meter = await self._read_registers_safe("read_input_registers", addr_meter, 1)
+        if rr_meter and not (hasattr(rr_meter, 'isError') and rr_meter.isError()) and len(rr_meter.registers) > 0:
+             # Annahme: Auch 100Wh Schritte?
+             data["meter_reading"] = rr_meter.registers[0] * 0.1
+
+        # 6. Derating (0x1A)
         addr_derating = base_address + OFFSET_DERATING_STATUS
         rr_derating = await self._read_registers_safe("read_input_registers", addr_derating, 1)
         if rr_derating and not (hasattr(rr_derating, 'isError') and rr_derating.isError()) and len(rr_derating.registers) > 0:
@@ -298,7 +286,7 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         try:
             new_data = {"system": {}, "points": {}}
             
-            # 1. Global Holdings (Configuration)
+            # 1. Global Holdings
             rr = await self._read_registers_safe("read_holding_registers", REG_SYS_POWER_LIMIT, 1)
             if rr and not (hasattr(rr, 'isError') and rr.isError()) and len(rr.registers) > 0:
                 new_data["system"]["power_setpoint_abs"] = rr.registers[0]
@@ -319,7 +307,6 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                 minor = rr_sys.registers[1] & 0xFF
                 new_data["system"]["firmware_version"] = f"{major}.{minor}.{patch}"
 
-            # Read Global Input Block
             rr_ins = await self._read_registers_safe("read_input_registers", REG_SYS_TOTAL_POWER_READ, 5)
             if rr_ins and not (hasattr(rr_ins, 'isError') and rr_ins.isError()) and len(rr_ins.registers) >= 5:
                 new_data["system"]["total_power"] = rr_ins.registers[0] * 100 
@@ -340,14 +327,32 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             if lp1_data:
                 new_data["points"][1] = lp1_data
 
-            # Try LP2 only if configured (not None) and different from LP1
             if ADDR_LP2_BASE is not None and ADDR_LP2_BASE != ADDR_LP1_BASE:
                 lp2_data = await self._read_charging_point_data(2)
                 if lp2_data:
                     new_data["points"][2] = lp2_data
 
-            # Check for data
-            if not new_data["points"] and not new_data["system"]:
+            # 5. Calculate System Totals
+            sum_energy_session = 0.0
+            sum_energy_total = 0.0
+            points_found = False
+            
+            for p in new_data["points"].values():
+                # Sum Session Energy
+                val_session = p.get("energy_session")
+                if val_session is not None:
+                    sum_energy_session += val_session
+                    points_found = True
+                
+                # Sum Lifetime Energy
+                val_total = p.get("meter_reading")
+                if val_total is not None:
+                    sum_energy_total += val_total
+            
+            new_data["system"]["total_energy_session"] = sum_energy_session
+            new_data["system"]["total_energy_total"] = sum_energy_total
+
+            if not points_found and not new_data["system"]:
                  raise UpdateFailed("No data received from Wallbox")
 
             return new_data
