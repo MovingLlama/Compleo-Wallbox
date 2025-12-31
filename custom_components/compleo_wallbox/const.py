@@ -6,45 +6,47 @@ DEFAULT_PORT = 502
 DEFAULT_NAME = "Compleo Wallbox"
 
 # --- REGISTER KONFIGURATION ---
-# Passen Sie diese Werte an Ihr Modell an.
 
-# Global / System (HOLDING Register)
-# Schreibbar
-REG_SYS_POWER_LIMIT = 0x0000  # Leistungsvorgabe (100W Schritte)
+# Global / System (HOLDING Register) - Schreibbar / Konfiguration
+REG_SYS_POWER_LIMIT = 0x0000  # Leistungsvorgabe (100W)
+REG_SYS_MAX_SCHIEFLAST = 0x0002 # Max. Schieflast (0.1A)
+REG_SYS_FALLBACK_POWER = 0x0003 # Fallback Leistung (100W)
 
-# Global / System (INPUT Register)
-# Nur lesbar
+# Global / System (INPUT Register) - Info / Messwerte
 REG_SYS_FW_PATCH = 0x0006
 REG_SYS_FW_MAJOR = 0x0007
-REG_SYS_ARTICLE_NUM = 0x0020  # Startadresse String
-REG_SYS_SERIAL_NUM = 0x0030   # Startadresse String
+
+# Neue Input Register (Laut User-Test)
+REG_SYS_TOTAL_POWER_READ = 0x0009 # Aktuelle Leistung der ganzen Ladestation
+REG_SYS_TOTAL_CURRENT_L1 = 0x000A # Gesamtstrom Phase 1
+REG_SYS_TOTAL_CURRENT_L2 = 0x000B # Gesamtstrom Phase 2
+REG_SYS_TOTAL_CURRENT_L3 = 0x000C # Gesamtstrom Phase 3
+REG_SYS_UNUSED_POWER = 0x000D     # Nicht verwendete Leistung
+
+REG_SYS_RFID_TAG = 0x0010         # RFID Tag (String)
+
+# Strings (Länge 16 Register!)
+REG_SYS_ARTICLE_NUM = 0x0020
+REG_SYS_SERIAL_NUM = 0x0030
+LEN_STRING_REGISTERS = 16 
 
 # --- LADEPUNKTE BASIS-ADRESSEN ---
-# Basis-Adresse für den ersten Ladepunkt (LP1).
-# Compleo Duo/Cito/Pro: meist 0x1000
-# Compleo Solo (Legacy): meist 0x0000
+# Korrigiert auf 0x0100 laut User-Test
 ADDR_LP1_BASE = 0x0100
-
-# Basis-Adresse für den zweiten Ladepunkt (LP2)
-# Compleo Duo: meist 0x2000
+# LP2 lassen wir auf Standard Duo Offset, falls relevant, sonst 0x0200 raten
 ADDR_LP2_BASE = 0x0200
 
 # --- LADEPUNKTE OFFSETS ---
-# Diese Offsets werden zur Basis-Adresse addiert.
-# Beispiel: Spannung L1 (LP1) = ADDR_LP1_BASE (0x1000) + OFFSET_VOLTAGE_L1 (0x00D) = 0x100D
-
-# Input Register Offsets
 OFFSET_STATUS_WORD = 0x001
-OFFSET_POWER = 0x002          # 100W Schritte
-OFFSET_CURRENT_L1 = 0x003     # 0.1A Schritte
+OFFSET_POWER = 0x002
+OFFSET_CURRENT_L1 = 0x003
 OFFSET_CURRENT_L2 = 0x004
 OFFSET_CURRENT_L3 = 0x005
-OFFSET_ENERGY = 0x008         # 100Wh Schritte
-OFFSET_PHASE_SWITCHES = 0x00A # Anzahl Phasenwechsel
-OFFSET_STATUS_CODE = 0x00C    # OCPP Status Code
-OFFSET_VOLTAGE_L1 = 0x00D     # Volt
+OFFSET_ENERGY = 0x008
+OFFSET_PHASE_SWITCHES = 0x00A
+OFFSET_STATUS_CODE = 0x00C
+OFFSET_VOLTAGE_L1 = 0x00D
 OFFSET_VOLTAGE_L2 = 0x00E
 OFFSET_VOLTAGE_L3 = 0x00F
 
-# Holding Register Offsets
-OFFSET_PHASE_MODE = 0x009     # Senken-Modus (Automatik/1ph/3ph)
+OFFSET_PHASE_MODE = 0x009

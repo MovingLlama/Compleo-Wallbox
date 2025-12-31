@@ -5,12 +5,17 @@ import logging
 import asyncio
 from homeassistant.components.number import NumberEntity, NumberDeviceClass
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfPower
+from homeassistant.const import UnitOfPower, UnitOfElectricCurrent
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, REG_SYS_POWER_LIMIT
+from .const import (
+    DOMAIN, 
+    REG_SYS_POWER_LIMIT,
+    REG_SYS_MAX_SCHIEFLAST,
+    REG_SYS_FALLBACK_POWER
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,32 +31,55 @@ async def async_setup_entry(
     entities = []
     
     # 1. Global Station Power Limit
-    entities.append(CompleoStationLimit(coordinator, uid_prefix))
+    entities.append(CompleoNumber(
+        coordinator, uid_prefix, "power_setpoint_abs", "Station Power Limit", 
+        REG_SYS_POWER_LIMIT, UnitOfPower.WATT, NumberDeviceClass.POWER,
+        0, 44000, 100, 100
+    ))
+
+    # 2. Max Schieflast
+    entities.append(CompleoNumber(
+        coordinator, uid_prefix, "max_schieflast", "Max Unbalanced Load", 
+        REG_SYS_MAX_SCHIEFLAST, UnitOfElectricCurrent.AMPERE, NumberDeviceClass.CURRENT,
+        6, 32, 0.1, 0.1
+    ))
+
+    # 3. Fallback Power
+    entities.append(CompleoNumber(
+        coordinator, uid_prefix, "fallback_power", "Fallback Power", 
+        REG_SYS_FALLBACK_POWER, UnitOfPower.WATT, NumberDeviceClass.POWER,
+        0, 44000, 100, 100
+    ))
         
     async_add_entities(entities)
 
 
-class CompleoStationLimit(CoordinatorEntity, NumberEntity):
-    """Global Charging Power Limit."""
+class CompleoNumber(CoordinatorEntity, NumberEntity):
+    """Generic Compleo Number Entity."""
 
     _attr_has_entity_name = True
-    _attr_name = "Station Power Limit"
-    _attr_native_unit_of_measurement = UnitOfPower.WATT
-    _attr_device_class = NumberDeviceClass.POWER
-    _attr_native_min_value = 0
-    _attr_native_max_value = 44000 
-    _attr_native_step = 100
-    _attr_icon = "mdi:lightning-bolt"
 
-    def __init__(self, coordinator, uid_prefix):
+    def __init__(self, coordinator, uid_prefix, key, name, register, unit, dev_class, min_val, max_val, step, multiplier):
         super().__init__(coordinator)
-        self._attr_unique_id = f"{uid_prefix}_station_limit"
+        self._key = key
+        self._attr_name = name
+        self._register = register
+        self._attr_native_unit_of_measurement = unit
+        self._attr_device_class = dev_class
+        self._attr_native_min_value = min_val
+        self._attr_native_max_value = max_val
+        self._attr_native_step = step
+        self._multiplier = multiplier
+        
+        self._attr_unique_id = f"{uid_prefix}_{key}"
 
     @property
     def native_value(self):
         if not self.coordinator.data: return None
-        raw = self.coordinator.data.get("system", {}).get("power_setpoint_abs")
-        return float(raw * 100) if raw is not None else None
+        raw = self.coordinator.data.get("system", {}).get(self._key)
+        if raw is not None:
+            return float(raw * self._multiplier)
+        return None
 
     @property
     def device_info(self):
@@ -63,23 +91,17 @@ class CompleoStationLimit(CoordinatorEntity, NumberEntity):
         }
 
     async def async_set_native_value(self, value: float) -> None:
-        modbus_val = int(value / 100)
-        await self._write_register(REG_SYS_POWER_LIMIT, modbus_val)
-
-    async def _write_register(self, address, value):
+        # Convert back to register value
+        modbus_val = int(value / self._multiplier)
+        
         try:
-            # We reuse the param name found during read
-            param = self.coordinator._param_name or "slave"
+            # Use the coordinator's helper method to handle slave/unit strategy
+            result = await self.coordinator.async_write_register(self._register, modbus_val)
             
-            if not self.coordinator.client.connected:
-                await self.coordinator.client.connect()
-                await asyncio.sleep(0.1)
-            
-            # Simple write attempt (assuming param name is correct from read phase)
-            kwargs = {param: 1}
-            result = await self.coordinator.client.write_register(address, value, **kwargs)
-            
-            if not result.isError():
+            if result is not None and not result.isError():
                 await self.coordinator.async_request_refresh()
+            else:
+                _LOGGER.error("Error writing to Compleo: %s", result)
+                
         except Exception as err:
             _LOGGER.error("Error writing to Compleo: %s", err)

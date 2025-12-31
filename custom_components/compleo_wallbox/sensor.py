@@ -12,7 +12,6 @@ from homeassistant.const import (
     UnitOfElectricPotential,
     UnitOfEnergy,
     UnitOfPower,
-    EntityCategory,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -31,15 +30,22 @@ async def async_setup_entry(
     
     sensors = []
     
-    # --- 1. System/Total Sensors ---
-    # Only Total Power, no separate Info Sensors anymore
+    # --- 1. System Sensors ---
+    # Global Measurements (Inputs)
     sys_sensors = [
         ("total_power", "Total Power (Station)", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT),
+        ("total_current_l1", "Total Current L1", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
+        ("total_current_l2", "Total Current L2", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
+        ("total_current_l3", "Total Current L3", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
+        ("unused_power", "Unused Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT),
     ]
     for key, name, unit, dev_class, state_class in sys_sensors:
         sensors.append(
             CompleoSystemSensor(coordinator, uid_prefix, key, name, unit, dev_class, state_class)
         )
+        
+    # RFID Sensor
+    sensors.append(CompleoSystemSensor(coordinator, uid_prefix, "rfid_tag", "Last RFID Tag", None, None, None, icon="mdi:card-account-details"))
 
     # --- 2. Point Sensors ---
     data = coordinator.data or {"points": {}}
@@ -81,7 +87,7 @@ class CompleoSystemSensor(CoordinatorEntity, SensorEntity):
     """Sensor for Global Station Data."""
     _attr_has_entity_name = True
     
-    def __init__(self, coordinator, uid_prefix, key, name, unit, device_class, state_class):
+    def __init__(self, coordinator, uid_prefix, key, name, unit, device_class, state_class, icon=None):
         super().__init__(coordinator)
         self._key = key
         self._attr_name = name
@@ -89,6 +95,8 @@ class CompleoSystemSensor(CoordinatorEntity, SensorEntity):
         self._attr_device_class = device_class
         self._attr_state_class = state_class
         self._attr_unique_id = f"{uid_prefix}_system_{key}"
+        if icon:
+            self._attr_icon = icon
 
     @property
     def native_value(self):
@@ -100,12 +108,10 @@ class CompleoSystemSensor(CoordinatorEntity, SensorEntity):
         """Return device registry information."""
         system_data = self.coordinator.data.get("system", {}) if self.coordinator.data else {}
         
-        # Build Device Info from fetched data
         fw = system_data.get("firmware_version", "Unknown")
         model = system_data.get("article_number", "Compleo Wallbox")
         serial = system_data.get("serial_number")
         
-        # Identifiers: Host is always primary. Add Serial if available.
         identifiers = {(DOMAIN, self.coordinator.host)}
         if serial:
             identifiers.add((DOMAIN, serial))
