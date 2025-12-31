@@ -60,6 +60,7 @@ async def async_setup_entry(
             ("current_l2", "Current L2", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
             ("current_l3", "Current L3", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
             ("phase_switch_count", "Phase Switches", None, None, SensorStateClass.MEASUREMENT),
+            # Numeric Charging Time (Seconds) - allows HA frontend conversion
             ("charging_time", "Charging Time", UnitOfTime.SECONDS, SensorDeviceClass.DURATION, SensorStateClass.MEASUREMENT),
         ]
 
@@ -70,7 +71,7 @@ async def async_setup_entry(
                     unit, dev_class, state_class
                 )
             )
-        
+
         # RFID Sensor (String)
         sensors.append(CompleoPointSensor(coordinator, uid_prefix, point_index, "rfid_tag", "RFID Tag", None, None, None, icon="mdi:card-account-details"))
 

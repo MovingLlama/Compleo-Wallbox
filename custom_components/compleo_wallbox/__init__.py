@@ -29,6 +29,7 @@ from .const import (
     REG_SYS_TOTAL_CURRENT_L2,
     REG_SYS_TOTAL_CURRENT_L3,
     REG_SYS_UNUSED_POWER,
+    REG_SYS_RFID_TAG,
     ADDR_LP1_BASE,
     ADDR_LP2_BASE,
     OFFSET_MAX_POWER,
@@ -148,28 +149,51 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         return None
 
     async def async_write_register(self, address, value, slave_id=1):
-        """Public helper to write a register using the discovered strategy."""
+        """
+        Public helper to write a register.
+        It forcefully tries all variants (slave, unit, None) until one succeeds or all fail.
+        This fixes the issue where read strategy might differ from write strategy or exceptions are raised.
+        """
         if not self.client.connected:
             await self.client.connect()
             await asyncio.sleep(0.1)
 
-        kwargs = {}
-        if self._strategy_name:
-            if "slave" in self._strategy_name:
-                kwargs["slave"] = slave_id
-            elif "unit" in self._strategy_name:
-                kwargs["unit"] = slave_id
-        else:
-            kwargs["slave"] = slave_id
+        # Helper for a single attempt
+        async def attempt(kwargs_dict):
+            return await self.client.write_register(address, value, **kwargs_dict)
 
-        try:
-            return await self.client.write_register(address, value, **kwargs)
-        except TypeError:
-            if "slave" in kwargs:
-                kwargs.pop("slave")
-                kwargs["unit"] = slave_id
-                return await self.client.write_register(address, value, **kwargs)
-            raise
+        # Strategies to try in order
+        attempts = [
+            {"slave": slave_id}, # Try standard first
+            {"unit": slave_id},  # Try legacy unit
+            {}                   # Try without ID (likely what works for you)
+        ]
+
+        last_error = None
+        for kwargs in attempts:
+            try:
+                result = await attempt(kwargs)
+                
+                # Success check
+                if result and not (hasattr(result, 'isError') and result.isError()):
+                    return result # Success!
+                
+                # If we get a functional Modbus error (not TypeError), log it but maybe stop?
+                if result and hasattr(result, 'isError') and result.isError():
+                     _LOGGER.warning("Write rejected by device (params: %s): %s", kwargs, result)
+                     return result # Return the error response
+
+            except TypeError as te:
+                # This parameter signature is invalid for this pymodbus version
+                last_error = te
+                continue
+            except Exception as e:
+                # Other errors
+                last_error = e
+                continue
+
+        _LOGGER.error("Failed to write to 0x%04x. All variants failed. Last error: %s", address, last_error)
+        return None
 
     def _decode_registers_to_string(self, rr, count) -> str | None:
         if rr and not (hasattr(rr, 'isError') and rr.isError()) and hasattr(rr, 'registers'):
@@ -200,11 +224,14 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
     async def _read_charging_point_data(self, index: int) -> dict | None:
         """Read data for a specific charging point."""
         
+        base_address = None
         if index == 1:
             base_address = ADDR_LP1_BASE
         elif index == 2:
             base_address = ADDR_LP2_BASE
-        else:
+        
+        # If address is None (disabled in const.py), skip
+        if base_address is None:
             return None
         
         data = {}
@@ -238,7 +265,6 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                 data["energy_total"] = regs[7] * 0.1  
 
         # 3. INPUT Block 2: Phase Switches, Error, Status, Voltages (0xA .. 0xF)
-        # Reading from 0xA (Phase Switches) to 0xF (Voltages) = 6 registers
         start_addr_2 = base_address + OFFSET_PHASE_SWITCHES
         rr_block2 = await self._read_registers_safe("read_input_registers", start_addr_2, 6)
         
@@ -248,10 +274,8 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             regs = rr_block2.registers
             if len(regs) >= 6:
                 data["phase_switch_count"] = regs[0] # 0xA
-                # 0xB -> Error Code
-                data["error_code"] = regs[1]
-                # 0xC -> Status Code
-                data["status_code"] = regs[2]
+                data["error_code"] = regs[1]         # 0xB
+                data["status_code"] = regs[2]        # 0xC
                 data["voltage_l1"] = regs[3]
                 data["voltage_l2"] = regs[4]
                 data["voltage_l3"] = regs[5]
@@ -317,7 +341,8 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             if lp1_data:
                 new_data["points"][1] = lp1_data
 
-            if ADDR_LP2_BASE != ADDR_LP1_BASE:
+            # Try LP2 only if configured (not None) and different from LP1
+            if ADDR_LP2_BASE is not None and ADDR_LP2_BASE != ADDR_LP1_BASE:
                 lp2_data = await self._read_charging_point_data(2)
                 if lp2_data:
                     new_data["points"][2] = lp2_data

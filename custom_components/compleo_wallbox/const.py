@@ -29,8 +29,13 @@ REG_SYS_SERIAL_NUM = 0x0030
 LEN_STRING_REGISTERS = 16 
 
 # --- LADEPUNKTE BASIS-ADRESSEN ---
+# Adresse für LP1 (Solo)
 ADDR_LP1_BASE = 0x0100
-ADDR_LP2_BASE = 0x0200
+
+# Adresse für LP2
+# Setzen Sie dies auf None, wenn Sie nur eine Solo (1 Ladepunkt) haben.
+# Für Duo Modelle ist dies meist 0x0200.
+ADDR_LP2_BASE = None 
 
 # --- LADEPUNKTE OFFSETS ---
 # Holding Registers
@@ -42,24 +47,23 @@ OFFSET_POWER = 0x002            # Aktuelle Leistung
 OFFSET_CURRENT_L1 = 0x003
 OFFSET_CURRENT_L2 = 0x004
 OFFSET_CURRENT_L3 = 0x005
-OFFSET_CHARGING_TIME = 0x006    # Ist Ladezeit (neu)
+OFFSET_CHARGING_TIME = 0x006    # Ist Ladezeit
 OFFSET_ENERGY = 0x008
 
 OFFSET_PHASE_MODE = 0x009       # Holding: Phase Mode
 
 OFFSET_PHASE_SWITCHES = 0x00A   # Input: Phasenwechsel
-OFFSET_ERROR_CODE = 0x00B       # Fehlercode (neu)
+OFFSET_ERROR_CODE = 0x00B       # Fehlercode
 OFFSET_STATUS_CODE = 0x00C      # OCPP Status
 OFFSET_VOLTAGE_L1 = 0x00D
 OFFSET_VOLTAGE_L2 = 0x00E
 OFFSET_VOLTAGE_L3 = 0x00F
 
-OFFSET_RFID_TAG = 0x010         # RFID Tag (Länge 10) (neu)
-OFFSET_DERATING_STATUS = 0x01A  # Temperatur Derating (neu)
+OFFSET_RFID_TAG = 0x010         # RFID Tag (Länge 10)
+OFFSET_DERATING_STATUS = 0x01A  # Temperatur Derating
 
 # --- STATUS MAPPINGS ---
 
-# Charge Point Error Codes (OCPP 1.6)
 CHARGE_POINT_ERROR_CODES = {
     0: "NoError",
     1: "ConnectorLockFailure",
@@ -80,7 +84,6 @@ CHARGE_POINT_ERROR_CODES = {
     16: "WeakSignal"
 }
 
-# Temperature Derating Status
 DERATING_STATUS_MAP = {
     0: "No derating",
     1: "1st Stage",
