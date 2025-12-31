@@ -21,6 +21,7 @@ from .const import (
     REG_SYS_MAX_SCHIEFLAST,
     REG_SYS_FALLBACK_POWER,
     REG_SYS_FW_PATCH,
+    REG_SYS_NUM_POINTS,
     REG_SYS_ARTICLE_NUM,
     REG_SYS_SERIAL_NUM,
     LEN_STRING_REGISTERS,
@@ -99,7 +100,9 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         )
         
         self.data = {
-            "system": {},
+            "system": {
+                "num_points": 1 # Default
+            },
             "points": {}
         }
 
@@ -242,7 +245,7 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                 data["current_l2"] = regs[3] * 0.1
                 data["current_l3"] = regs[4] * 0.1
                 data["charging_time"] = regs[5]
-                data["energy_session"] = regs[7] * 0.1 # War energy_total, jetzt Session
+                data["energy_session"] = regs[7] * 0.1 
 
         # 3. INPUT Block 2: Phase Switches, Error, Status, Voltages (0xA .. 0xF)
         start_addr_2 = base_address + OFFSET_PHASE_SWITCHES
@@ -266,11 +269,10 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         if rfid_val:
             data["rfid_tag"] = rfid_val
 
-        # 5. Meter Reading (Lifetime) (0x18) - NEU
+        # 5. Meter Reading (Lifetime) (0x18)
         addr_meter = base_address + OFFSET_METER_READING
         rr_meter = await self._read_registers_safe("read_input_registers", addr_meter, 1)
         if rr_meter and not (hasattr(rr_meter, 'isError') and rr_meter.isError()) and len(rr_meter.registers) > 0:
-             # Annahme: Auch 100Wh Schritte?
              data["meter_reading"] = rr_meter.registers[0] * 0.1
 
         # 6. Derating (0x1A)
@@ -286,6 +288,20 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         try:
             new_data = {"system": {}, "points": {}}
             
+            # --- DETECT NUMBER OF POINTS ---
+            # Try to read 0x0008 (Global Input). If fail, default to 1.
+            num_points = 1
+            rr_points = await self._read_registers_safe("read_input_registers", REG_SYS_NUM_POINTS, 1)
+            if rr_points and not (hasattr(rr_points, 'isError') and rr_points.isError()) and len(rr_points.registers) > 0:
+                val = rr_points.registers[0]
+                if val in [1, 2]:
+                    num_points = val
+                    _LOGGER.debug("Detected %d charging points from register 0x0008", num_points)
+                else:
+                    _LOGGER.warning("Register 0x0008 returned %d points. Defaulting to 1.", val)
+            
+            new_data["system"]["num_points"] = num_points
+
             # 1. Global Holdings
             rr = await self._read_registers_safe("read_holding_registers", REG_SYS_POWER_LIMIT, 1)
             if rr and not (hasattr(rr, 'isError') and rr.isError()) and len(rr.registers) > 0:
@@ -322,15 +338,11 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             ser_num = await self._read_string(REG_SYS_SERIAL_NUM, LEN_STRING_REGISTERS, "Serial Num")
             if ser_num: new_data["system"]["serial_number"] = ser_num
 
-            # 4. Points
-            lp1_data = await self._read_charging_point_data(1)
-            if lp1_data:
-                new_data["points"][1] = lp1_data
-
-            if ADDR_LP2_BASE is not None and ADDR_LP2_BASE != ADDR_LP1_BASE:
-                lp2_data = await self._read_charging_point_data(2)
-                if lp2_data:
-                    new_data["points"][2] = lp2_data
+            # 4. Points (Dynamic Loop)
+            for i in range(1, num_points + 1):
+                lp_data = await self._read_charging_point_data(i)
+                if lp_data:
+                    new_data["points"][i] = lp_data
 
             # 5. Calculate System Totals
             sum_energy_session = 0.0
@@ -338,13 +350,11 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             points_found = False
             
             for p in new_data["points"].values():
-                # Sum Session Energy
                 val_session = p.get("energy_session")
                 if val_session is not None:
                     sum_energy_session += val_session
                     points_found = True
                 
-                # Sum Lifetime Energy
                 val_total = p.get("meter_reading")
                 if val_total is not None:
                     sum_energy_total += val_total

@@ -29,6 +29,11 @@ async def async_setup_entry(
     coordinator = hass.data[DOMAIN][entry.entry_id]
     uid_prefix = entry.unique_id or coordinator.host
     
+    # Check number of points from coordinator data (populated in __init__)
+    num_points = 1
+    if coordinator.data and "system" in coordinator.data:
+        num_points = coordinator.data["system"].get("num_points", 1)
+
     sensors = []
     
     # --- 1. System Sensors ---
@@ -38,7 +43,6 @@ async def async_setup_entry(
         ("total_current_l2", "Total Current L2", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
         ("total_current_l3", "Total Current L3", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
         ("unused_power", "Unused Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT),
-        # New Sums
         ("total_energy_session", "Station Energy (Session)", UnitOfEnergy.KILO_WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING),
         ("total_energy_total", "Station Energy (Lifetime)", UnitOfEnergy.KILO_WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING),
     ]
@@ -47,17 +51,11 @@ async def async_setup_entry(
             CompleoSystemSensor(coordinator, uid_prefix, key, name, unit, dev_class, state_class)
         )
         
-    # --- 2. Point Sensors ---
-    data = coordinator.data or {"points": {}}
-    points_data = data.get("points", {})
-    indices = points_data.keys() if points_data else [1]
-
-    for point_index in indices:
+    # --- 2. Point Sensors (Dynamic) ---
+    for point_index in range(1, num_points + 1):
         point_sensors = [
             ("current_power", "Power", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT),
-            # Renamed energy_total -> energy_session to be clearer, but keeping key similar in HA
             ("energy_session", "Energy (Session)", UnitOfEnergy.KILO_WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING),
-            # New Lifetime Counter
             ("meter_reading", "Total Energy (Lifetime)", UnitOfEnergy.KILO_WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING),
             
             ("voltage_l1", "Voltage L1", UnitOfElectricPotential.VOLT, SensorDeviceClass.VOLTAGE, SensorStateClass.MEASUREMENT),
@@ -78,24 +76,20 @@ async def async_setup_entry(
                 )
             )
 
-        # RFID Sensor (String)
         sensors.append(CompleoPointSensor(coordinator, uid_prefix, point_index, "rfid_tag", "RFID Tag", None, None, None, icon="mdi:card-account-details"))
 
-        # Status Enum
         sensors.append(
             CompleoPointSensor(
                 coordinator, uid_prefix, point_index, "status_code", "Status",
                 None, SensorDeviceClass.ENUM, None, icon="mdi:ev-station"
             )
         )
-        # Error Code Enum
         sensors.append(
             CompleoPointSensor(
                 coordinator, uid_prefix, point_index, "error_code", "Error Code",
                 None, SensorDeviceClass.ENUM, None, icon="mdi:alert-circle"
             )
         )
-        # Derating Enum
         sensors.append(
             CompleoPointSensor(
                 coordinator, uid_prefix, point_index, "derating_status", "Temp Derating",

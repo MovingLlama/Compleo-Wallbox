@@ -30,13 +30,14 @@ async def async_setup_entry(
     coordinator = hass.data[DOMAIN][entry.entry_id]
     uid_prefix = entry.unique_id or coordinator.host
     
+    # Get dynamic point count
+    num_points = 1
+    if coordinator.data and "system" in coordinator.data:
+        num_points = coordinator.data["system"].get("num_points", 1)
+
     entities = []
     
-    data = coordinator.data or {"points": {}}
-    points_data = data.get("points", {})
-    indices = points_data.keys() if points_data else [1]
-    
-    for idx in indices:
+    for idx in range(1, num_points + 1):
         entities.append(CompleoPhaseMode(coordinator, uid_prefix, idx))
         
     async_add_entities(entities)

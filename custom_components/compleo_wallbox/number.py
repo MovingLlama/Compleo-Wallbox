@@ -30,6 +30,11 @@ async def async_setup_entry(
     coordinator = hass.data[DOMAIN][entry.entry_id]
     uid_prefix = entry.unique_id or coordinator.host
     
+    # Get dynamic point count
+    num_points = 1
+    if coordinator.data and "system" in coordinator.data:
+        num_points = coordinator.data["system"].get("num_points", 1)
+
     entities = []
     
     # 1. Global Station Power Limit
@@ -53,12 +58,8 @@ async def async_setup_entry(
         0, 44000, 100, 100
     ))
 
-    # 4. Per-Point Max Power
-    data = coordinator.data or {"points": {}}
-    points_data = data.get("points", {})
-    indices = points_data.keys() if points_data else [1]
-    
-    for idx in indices:
+    # 4. Per-Point Max Power (Dynamic)
+    for idx in range(1, num_points + 1):
         entities.append(CompleoPointNumber(
             coordinator, uid_prefix, idx, "max_power_limit", "Max Power Limit",
             OFFSET_MAX_POWER, UnitOfPower.WATT, NumberDeviceClass.POWER,

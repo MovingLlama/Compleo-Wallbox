@@ -15,6 +15,7 @@ REG_SYS_FALLBACK_POWER = 0x0003 # Fallback Leistung (100W)
 # Global / System (INPUT Register) - Info / Messwerte
 REG_SYS_FW_PATCH = 0x0006
 REG_SYS_FW_MAJOR = 0x0007
+REG_SYS_NUM_POINTS = 0x0008 # Anzahl Ladepunkte (NEU)
 
 # Neue Input Register
 REG_SYS_TOTAL_POWER_READ = 0x0009 # Aktuelle Leistung der ganzen Ladestation
@@ -55,7 +56,7 @@ OFFSET_VOLTAGE_L2 = 0x00E
 OFFSET_VOLTAGE_L3 = 0x00F
 
 OFFSET_RFID_TAG = 0x010         # RFID Tag (Länge 10)
-OFFSET_METER_READING = 0x018    # Gesamtzähler (Lifetime) - NEU
+OFFSET_METER_READING = 0x018    # Gesamtzähler (Lifetime)
 OFFSET_DERATING_STATUS = 0x01A  # Temperatur Derating
 
 # --- STATUS MAPPINGS ---
