@@ -29,21 +29,25 @@ from .const import (
     REG_SYS_TOTAL_CURRENT_L2,
     REG_SYS_TOTAL_CURRENT_L3,
     REG_SYS_UNUSED_POWER,
-    REG_SYS_RFID_TAG,
     ADDR_LP1_BASE,
     ADDR_LP2_BASE,
+    OFFSET_MAX_POWER,
     OFFSET_STATUS_WORD,
     OFFSET_POWER,
     OFFSET_CURRENT_L1,
     OFFSET_CURRENT_L2,
     OFFSET_CURRENT_L3,
+    OFFSET_CHARGING_TIME,
     OFFSET_ENERGY,
     OFFSET_PHASE_SWITCHES,
+    OFFSET_ERROR_CODE,
     OFFSET_STATUS_CODE,
     OFFSET_VOLTAGE_L1,
     OFFSET_VOLTAGE_L2,
     OFFSET_VOLTAGE_L3,
-    OFFSET_PHASE_MODE
+    OFFSET_PHASE_MODE,
+    OFFSET_RFID_TAG,
+    OFFSET_DERATING_STATUS
 )
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.NUMBER, Platform.SELECT]
@@ -144,63 +148,28 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         return None
 
     async def async_write_register(self, address, value, slave_id=1):
-        """Public helper to write a register trying multiple strategies."""
+        """Public helper to write a register using the discovered strategy."""
         if not self.client.connected:
             await self.client.connect()
             await asyncio.sleep(0.1)
 
-        # Helper to execute write
-        async def try_write(kwargs):
-             return await self.client.write_register(address, value, **kwargs)
-
-        # 1. Try strategy derived from reading
+        kwargs = {}
         if self._strategy_name:
-            kwargs = {}
             if "slave" in self._strategy_name:
                 kwargs["slave"] = slave_id
             elif "unit" in self._strategy_name:
                 kwargs["unit"] = slave_id
-            # else: no keyword
-            
-            try:
-                result = await try_write(kwargs)
-                if result and not (hasattr(result, 'isError') and result.isError()):
-                    return result
-                # If error but not TypeError, return it (device rejected value)
-                if result and hasattr(result, 'isError') and result.isError():
-                    _LOGGER.warning("Write rejected by device at 0x%04x: %s", address, result)
-                    return result
-            except TypeError:
-                pass # Strategy failed, try fallbacks
-            except Exception as e:
-                _LOGGER.error("Exception writing 0x%04x: %s", address, e)
-                return None
+        else:
+            kwargs["slave"] = slave_id
 
-        # 2. Fallback: Try all variations
-        strategies = [
-            {"slave": slave_id},
-            {"unit": slave_id},
-            {} # No kwargs
-        ]
-        
-        last_error = None
-        for kwargs in strategies:
-            try:
-                result = await try_write(kwargs)
-                if result and not (hasattr(result, 'isError') and result.isError()):
-                    return result
-                if result and hasattr(result, 'isError') and result.isError():
-                     _LOGGER.warning("Write error (kwargs=%s): %s", kwargs, result)
-                     return result # Functional error
-            except TypeError as te:
-                last_error = te
-                continue
-            except Exception as e:
-                last_error = e
-                continue
-
-        _LOGGER.error("Failed to write to 0x%04x. All params failed. Last error: %s", address, last_error)
-        return None
+        try:
+            return await self.client.write_register(address, value, **kwargs)
+        except TypeError:
+            if "slave" in kwargs:
+                kwargs.pop("slave")
+                kwargs["unit"] = slave_id
+                return await self.client.write_register(address, value, **kwargs)
+            raise
 
     def _decode_registers_to_string(self, rr, count) -> str | None:
         if rr and not (hasattr(rr, 'isError') and rr.isError()) and hasattr(rr, 'registers'):
@@ -240,42 +209,64 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         
         data = {}
 
-        # --- Block 1: Status/Power/Energy (Input) ---
+        # 1. HOLDING: Max Power (0x0) + Phase Mode (0x9)
+        addr_hold_0 = base_address + OFFSET_MAX_POWER
+        rr_hold = await self._read_registers_safe("read_holding_registers", addr_hold_0, 10)
+        if rr_hold and not (hasattr(rr_hold, 'isError') and rr_hold.isError()) and len(rr_hold.registers) >= 10:
+             # Offset 0: Max Power
+             data["max_power_limit"] = rr_hold.registers[0]
+             # Offset 9: Phase Mode
+             data["phase_mode"] = rr_hold.registers[9]
+
+        # 2. INPUT Block 1: Status, Power, Currents, Time, Energy (0x1 .. 0x8)
         start_addr_1 = base_address + OFFSET_STATUS_WORD
         rr_block1 = await self._read_registers_safe("read_input_registers", start_addr_1, 8)
         
         if not rr_block1 or (hasattr(rr_block1, 'isError') and rr_block1.isError()):
-            return None
+            # Partial fail safe
+            pass
+        else:
+            regs = rr_block1.registers
+            if len(regs) >= 8:
+                data["status_word"] = regs[0]
+                data["current_power"] = regs[1] * 100 
+                data["current_l1"] = regs[2] * 0.1    
+                data["current_l2"] = regs[3] * 0.1
+                data["current_l3"] = regs[4] * 0.1
+                # Index 5 corresponds to Offset 6 (0x1 + 5 = 0x6) -> Charging Time
+                data["charging_time"] = regs[5]
+                data["energy_total"] = regs[7] * 0.1  
 
-        regs = rr_block1.registers
-        if len(regs) >= 8:
-            data["status_word"] = regs[0]
-            data["current_power"] = regs[1] * 100 
-            data["current_l1"] = regs[2] * 0.1    
-            data["current_l2"] = regs[3] * 0.1
-            data["current_l3"] = regs[4] * 0.1
-            data["energy_total"] = regs[7] * 0.1  
-
-        # --- Block 2: Voltages (Input) ---
+        # 3. INPUT Block 2: Phase Switches, Error, Status, Voltages (0xA .. 0xF)
+        # Reading from 0xA (Phase Switches) to 0xF (Voltages) = 6 registers
         start_addr_2 = base_address + OFFSET_PHASE_SWITCHES
         rr_block2 = await self._read_registers_safe("read_input_registers", start_addr_2, 6)
         
-        data.update({"status_code": 0, "voltage_l1": 0, "voltage_l2": 0, "voltage_l3": 0})
+        data.update({"status_code": 0, "error_code": 0, "voltage_l1": 0, "voltage_l2": 0, "voltage_l3": 0})
         
         if rr_block2 and not (hasattr(rr_block2, 'isError') and rr_block2.isError()):
             regs = rr_block2.registers
             if len(regs) >= 6:
-                data["phase_switch_count"] = regs[0]
+                data["phase_switch_count"] = regs[0] # 0xA
+                # 0xB -> Error Code
+                data["error_code"] = regs[1]
+                # 0xC -> Status Code
                 data["status_code"] = regs[2]
                 data["voltage_l1"] = regs[3]
                 data["voltage_l2"] = regs[4]
                 data["voltage_l3"] = regs[5]
 
-        # --- Phase Mode (Holding) ---
-        addr_hold = base_address + OFFSET_PHASE_MODE
-        rr_hold = await self._read_registers_safe("read_holding_registers", addr_hold, 1)
-        if rr_hold and not (hasattr(rr_hold, 'isError') and rr_hold.isError()) and len(rr_hold.registers) > 0:
-            data["phase_mode"] = rr_hold.registers[0]
+        # 4. RFID (0x10, Length 10)
+        addr_rfid = base_address + OFFSET_RFID_TAG
+        rfid_val = await self._read_string(addr_rfid, 10, f"LP{index} RFID")
+        if rfid_val:
+            data["rfid_tag"] = rfid_val
+
+        # 5. Derating (0x1A)
+        addr_derating = base_address + OFFSET_DERATING_STATUS
+        rr_derating = await self._read_registers_safe("read_input_registers", addr_derating, 1)
+        if rr_derating and not (hasattr(rr_derating, 'isError') and rr_derating.isError()) and len(rr_derating.registers) > 0:
+            data["derating_status"] = rr_derating.registers[0]
 
         return data
 
@@ -313,10 +304,6 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                 new_data["system"]["total_current_l2"] = rr_ins.registers[2] * 0.1
                 new_data["system"]["total_current_l3"] = rr_ins.registers[3] * 0.1
                 new_data["system"]["unused_power"] = rr_ins.registers[4] * 100 
-
-            # RFID
-            rfid = await self._read_string(REG_SYS_RFID_TAG, 10, "RFID")
-            if rfid: new_data["system"]["rfid_tag"] = rfid
 
             # 3. Strings
             art_num = await self._read_string(REG_SYS_ARTICLE_NUM, LEN_STRING_REGISTERS, "Article Num")

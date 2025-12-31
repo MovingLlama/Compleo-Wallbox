@@ -12,12 +12,13 @@ from homeassistant.const import (
     UnitOfElectricPotential,
     UnitOfEnergy,
     UnitOfPower,
+    UnitOfTime,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, CHARGE_POINT_ERROR_CODES, DERATING_STATUS_MAP
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -31,7 +32,6 @@ async def async_setup_entry(
     sensors = []
     
     # --- 1. System Sensors ---
-    # Global Measurements (Inputs)
     sys_sensors = [
         ("total_power", "Total Power (Station)", UnitOfPower.WATT, SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT),
         ("total_current_l1", "Total Current L1", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
@@ -44,9 +44,6 @@ async def async_setup_entry(
             CompleoSystemSensor(coordinator, uid_prefix, key, name, unit, dev_class, state_class)
         )
         
-    # RFID Sensor
-    sensors.append(CompleoSystemSensor(coordinator, uid_prefix, "rfid_tag", "Last RFID Tag", None, None, None, icon="mdi:card-account-details"))
-
     # --- 2. Point Sensors ---
     data = coordinator.data or {"points": {}}
     points_data = data.get("points", {})
@@ -63,6 +60,7 @@ async def async_setup_entry(
             ("current_l2", "Current L2", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
             ("current_l3", "Current L3", UnitOfElectricCurrent.AMPERE, SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT),
             ("phase_switch_count", "Phase Switches", None, None, SensorStateClass.MEASUREMENT),
+            ("charging_time", "Charging Time", UnitOfTime.SECONDS, SensorDeviceClass.DURATION, SensorStateClass.MEASUREMENT),
         ]
 
         for key, name, unit, dev_class, state_class in point_sensors:
@@ -73,11 +71,28 @@ async def async_setup_entry(
                 )
             )
         
+        # RFID Sensor (String)
+        sensors.append(CompleoPointSensor(coordinator, uid_prefix, point_index, "rfid_tag", "RFID Tag", None, None, None, icon="mdi:card-account-details"))
+
         # Status Enum
         sensors.append(
             CompleoPointSensor(
                 coordinator, uid_prefix, point_index, "status_code", "Status",
                 None, SensorDeviceClass.ENUM, None, icon="mdi:ev-station"
+            )
+        )
+        # Error Code Enum
+        sensors.append(
+            CompleoPointSensor(
+                coordinator, uid_prefix, point_index, "error_code", "Error Code",
+                None, SensorDeviceClass.ENUM, None, icon="mdi:alert-circle"
+            )
+        )
+        # Derating Enum
+        sensors.append(
+            CompleoPointSensor(
+                coordinator, uid_prefix, point_index, "derating_status", "Temp Derating",
+                None, SensorDeviceClass.ENUM, None, icon="mdi:thermometer-alert"
             )
         )
     
@@ -149,6 +164,12 @@ class CompleoPointSensor(CoordinatorEntity, SensorEntity):
         points = self.coordinator.data.get("points", {})
         val = points.get(self._point_index, {}).get(self._key)
         
+        if self._key == "error_code" and val is not None:
+            return CHARGE_POINT_ERROR_CODES.get(val, f"Unknown ({val})")
+            
+        if self._key == "derating_status" and val is not None:
+            return DERATING_STATUS_MAP.get(val, f"Unknown ({val})")
+
         if self._key == "status_code" and val is not None:
             return str(val)
             
