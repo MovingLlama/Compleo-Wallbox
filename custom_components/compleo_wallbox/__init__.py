@@ -14,9 +14,30 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 
-from .const import DOMAIN, DEFAULT_SCAN_INTERVAL
+from .const import (
+    DOMAIN, 
+    DEFAULT_SCAN_INTERVAL,
+    # Import Register Constants
+    REG_SYS_POWER_LIMIT,
+    REG_SYS_FW_PATCH,
+    REG_SYS_ARTICLE_NUM,
+    REG_SYS_SERIAL_NUM,
+    ADDR_LP1_BASE,
+    ADDR_LP2_BASE,
+    OFFSET_STATUS_WORD,
+    OFFSET_POWER,
+    OFFSET_CURRENT_L1,
+    OFFSET_CURRENT_L2,
+    OFFSET_CURRENT_L3,
+    OFFSET_ENERGY,
+    OFFSET_PHASE_SWITCHES,
+    OFFSET_STATUS_CODE,
+    OFFSET_VOLTAGE_L1,
+    OFFSET_VOLTAGE_L2,
+    OFFSET_VOLTAGE_L3,
+    OFFSET_PHASE_MODE
+)
 
-# Supported platforms
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.NUMBER, Platform.SELECT]
 
 _LOGGER = logging.getLogger(__name__)
@@ -29,7 +50,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     coordinator = CompleoDataUpdateCoordinator(hass, host, port, name)
 
-    # Allow startup even if offline
     try:
         await coordinator.async_config_entry_first_refresh()
     except Exception as e:
@@ -53,13 +73,10 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
 
     def __init__(self, hass: HomeAssistant, host: str, port: int, name: str) -> None:
         self.host = host
-        # Slightly longer timeout for stability
         self.client = AsyncModbusTcpClient(host, port=port, timeout=5)
         self.device_name = name
         self.device_info_map = {} 
         self._strategy_name = None
-        # Track if we found LP1 at 0x1000 or 0x0000
-        self._lp_base_offset = None 
         
         super().__init__(
             hass,
@@ -82,12 +99,12 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         func = getattr(self.client, func_name)
         
         strategies = []
-        # Group A: Positional Count
+        # Strategies for different pymodbus versions / strictness
         strategies.append(("slave_pos_cnt", [address, count], {"slave": slave_id}))
         strategies.append(("unit_pos_cnt", [address, count], {"unit": slave_id}))
         strategies.append(("no_unit_pos_cnt", [address, count], {}))
         
-        # Group B: Keyword Count (Fix for 'takes 2 but 3 given')
+        # Keyword Count Strategies (Fix for 'takes 2 but 3 given')
         strategies.append(("slave_kw_cnt", [address], {"count": count, "slave": slave_id}))
         strategies.append(("unit_kw_cnt", [address], {"count": count, "unit": slave_id}))
         strategies.append(("no_unit_kw_cnt", [address], {"count": count}))
@@ -106,7 +123,6 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                 if result is None or (hasattr(result, 'isError') and result.isError()):
                     return result
 
-                # Check register count to prevent "list index out of range"
                 if hasattr(result, 'registers') and len(result.registers) < count:
                     continue
 
@@ -122,76 +138,70 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         return None
 
     def _decode_registers_to_string(self, rr, count) -> str | None:
-        """Decodes register result to ascii string."""
-        if rr and not (hasattr(rr, 'isError') and rr.isError()) and hasattr(rr, 'registers') and len(rr.registers) == count:
+        if rr and not (hasattr(rr, 'isError') and rr.isError()) and hasattr(rr, 'registers'):
             try:
-                # Convert registers to string (2 chars per register)
                 s = b""
                 for reg in rr.registers:
                     s += reg.to_bytes(2, 'big')
-                # Decode and strip null bytes / spaces
                 val = s.decode('ascii', errors='ignore').rstrip('\x00').strip()
-                # Filter out garbage or empty strings
-                if val and len(val) > 1:
+                if val and len(val) > 0:
                     return val
             except Exception:
                 pass
         return None
 
-    async def _read_string(self, address, count) -> str | None:
+    async def _read_string(self, address, count, name_debug="Unknown") -> str | None:
         """Helper to read a string from registers (tries Input then Holding)."""
-        
-        # 1. Try Input Registers (Standard)
         rr = await self._read_registers_safe("read_input_registers", address, count)
         val = self._decode_registers_to_string(rr, count)
         if val:
             return val
             
-        # 2. Fallback: Try Holding Registers (Legacy/Some Models)
         rr_hold = await self._read_registers_safe("read_holding_registers", address, count)
-        val = self._decode_registers_to_string(rr_hold, count)
-        
-        return val
+        val_hold = self._decode_registers_to_string(rr_hold, count)
+        if val_hold:
+            return val_hold
+        return None
 
     async def _read_charging_point_data(self, index: int) -> dict | None:
         """Read data for a specific charging point."""
         
-        # Determine Base Address
-        base_address = index * 0x1000
-        if index == 1 and self._lp_base_offset == 0:
-            base_address = 0x0000
+        # Calculate Base Address from CONST
+        if index == 1:
+            base_address = ADDR_LP1_BASE
+        elif index == 2:
+            base_address = ADDR_LP2_BASE
+        else:
+            return None
         
         data = {}
 
-        # --- Block 1: Status/Power/Energy ---
-        start_addr_1 = base_address + 0x001
+        # --- Block 1: Status/Power/Energy (Input) ---
+        # Reading 8 Registers starting from Offset 1
+        start_addr_1 = base_address + OFFSET_STATUS_WORD
         
         rr_block1 = await self._read_registers_safe("read_input_registers", start_addr_1, 8)
         
-        # FALLBACK DETECTION (Only for LP1)
-        if (not rr_block1 or (hasattr(rr_block1, 'isError') and rr_block1.isError())) and index == 1 and self._lp_base_offset is None:
-            # _LOGGER.debug("LP1 at 0x1000 failed, trying 0x0000 map...")
-            base_address = 0x0000
-            start_addr_1 = 0x0001
-            rr_block1 = await self._read_registers_safe("read_input_registers", start_addr_1, 8)
-            if rr_block1 and not (hasattr(rr_block1, 'isError') and rr_block1.isError()):
-                self._lp_base_offset = 0 
-                _LOGGER.info("Detected Compleo Legacy Map (Base 0x0000)")
-
         if not rr_block1 or (hasattr(rr_block1, 'isError') and rr_block1.isError()):
             return None
 
         regs = rr_block1.registers
         if len(regs) >= 8:
+            # Map registers based on relative position in the block (0 to 7)
+            # 0: Offset 1 (Status)
+            # 1: Offset 2 (Power)
+            # 2: Offset 3 (L1) ...
             data["status_word"] = regs[0]
             data["current_power"] = regs[1] * 100 
             data["current_l1"] = regs[2] * 0.1    
             data["current_l2"] = regs[3] * 0.1
             data["current_l3"] = regs[4] * 0.1
+            # 7: Offset 8 (Energy)
             data["energy_total"] = regs[7] * 0.1  
 
-        # --- Block 2: Voltages ---
-        start_addr_2 = base_address + 0x00A
+        # --- Block 2: Voltages (Input) ---
+        # Reading 6 Registers starting from Offset 0x00A (Phase Switches)
+        start_addr_2 = base_address + OFFSET_PHASE_SWITCHES
         rr_block2 = await self._read_registers_safe("read_input_registers", start_addr_2, 6)
         
         data.update({"status_code": 0, "voltage_l1": 0, "voltage_l2": 0, "voltage_l3": 0})
@@ -199,14 +209,19 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         if rr_block2 and not (hasattr(rr_block2, 'isError') and rr_block2.isError()):
             regs = rr_block2.registers
             if len(regs) >= 6:
+                # 0: Offset A (Phase Switches)
                 data["phase_switch_count"] = regs[0]
+                # 2: Offset C (Status Code)
                 data["status_code"] = regs[2]
+                # 3: Offset D (L1)
                 data["voltage_l1"] = regs[3]
+                # 4: Offset E (L2)
                 data["voltage_l2"] = regs[4]
+                # 5: Offset F (L3)
                 data["voltage_l3"] = regs[5]
 
         # --- Phase Mode (Holding) ---
-        addr_hold = base_address + 0x009
+        addr_hold = base_address + OFFSET_PHASE_MODE
         rr_hold = await self._read_registers_safe("read_holding_registers", addr_hold, 1)
         if rr_hold and not (hasattr(rr_hold, 'isError') and rr_hold.isError()) and len(rr_hold.registers) > 0:
             data["phase_mode"] = rr_hold.registers[0]
@@ -218,14 +233,13 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         try:
             new_data = {"system": {}, "points": {}}
             
-            # 1. Global Limit (Probe) - 0x0000
-            # If this fails, we LOG it but continue, so we might still get point data
-            rr_hold = await self._read_registers_safe("read_holding_registers", 0x0000, 1)
+            # 1. Global Limit (Probe)
+            rr_hold = await self._read_registers_safe("read_holding_registers", REG_SYS_POWER_LIMIT, 1)
             if rr_hold and not (hasattr(rr_hold, 'isError') and rr_hold.isError()) and len(rr_hold.registers) > 0:
                 new_data["system"]["power_setpoint_abs"] = rr_hold.registers[0]
             
-            # 2. System Info (Firmware) - 0x0006 (2 regs)
-            rr_sys = await self._read_registers_safe("read_input_registers", 0x0006, 2)
+            # 2. System Info (Firmware) - 2 regs
+            rr_sys = await self._read_registers_safe("read_input_registers", REG_SYS_FW_PATCH, 2)
             if rr_sys and not (hasattr(rr_sys, 'isError') and rr_sys.isError()) and len(rr_sys.registers) >= 2:
                 patch = rr_sys.registers[0] >> 8 
                 major = rr_sys.registers[1] >> 8
@@ -233,12 +247,10 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
                 new_data["system"]["firmware_version"] = f"{major}.{minor}.{patch}"
 
             # 3. Strings (Article/Serial)
-            # Article Number often 0x0020 (Length 10)
-            art_num = await self._read_string(0x0020, 10)
+            art_num = await self._read_string(REG_SYS_ARTICLE_NUM, 10, "Article Num")
             if art_num: new_data["system"]["article_number"] = art_num
             
-            # Serial Number often 0x0030 (Length 10)
-            ser_num = await self._read_string(0x0030, 10)
+            ser_num = await self._read_string(REG_SYS_SERIAL_NUM, 10, "Serial Num")
             if ser_num: new_data["system"]["serial_number"] = ser_num
 
             # 4. Points
@@ -246,24 +258,25 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             if lp1_data:
                 new_data["points"][1] = lp1_data
 
-            if self._lp_base_offset != 0:
+            # Try LP2 (only if LP2 base is different or explicitly set)
+            if ADDR_LP2_BASE != ADDR_LP1_BASE:
                 lp2_data = await self._read_charging_point_data(2)
                 if lp2_data:
                     new_data["points"][2] = lp2_data
 
             # 5. Totals
-            total_power = 0
-            if not new_data["points"]:
-                # If we have no points AND no system data, raise error
-                if not new_data["system"]:
-                    raise UpdateFailed("No data received from Wallbox")
-            
+            total_power = 0.0
+            points_found = False
             for p in new_data["points"].values():
                 val = p.get("current_power")
                 if val is not None:
                     total_power += val
+                    points_found = True
             
             new_data["system"]["total_power"] = total_power
+            
+            if not points_found and not new_data["system"]:
+                 raise UpdateFailed("No data received from Wallbox")
 
             return new_data
 

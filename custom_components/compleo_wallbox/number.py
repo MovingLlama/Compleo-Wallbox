@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, REG_SYS_POWER_LIMIT
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ async def async_setup_entry(
 
 
 class CompleoStationLimit(CoordinatorEntity, NumberEntity):
-    """Global Charging Power Limit (0x0000)."""
+    """Global Charging Power Limit."""
 
     _attr_has_entity_name = True
     _attr_name = "Station Power Limit"
@@ -64,17 +64,21 @@ class CompleoStationLimit(CoordinatorEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         modbus_val = int(value / 100)
-        # REVERTED TO 0x0000
-        await self._write_register(0x0000, modbus_val)
+        await self._write_register(REG_SYS_POWER_LIMIT, modbus_val)
 
     async def _write_register(self, address, value):
         try:
+            # We reuse the param name found during read
             param = self.coordinator._param_name or "slave"
+            
             if not self.coordinator.client.connected:
                 await self.coordinator.client.connect()
                 await asyncio.sleep(0.1)
             
-            result = await self.coordinator.client.write_register(address, value, **{param: 1})
+            # Simple write attempt (assuming param name is correct from read phase)
+            kwargs = {param: 1}
+            result = await self.coordinator.client.write_register(address, value, **kwargs)
+            
             if not result.isError():
                 await self.coordinator.async_request_refresh()
         except Exception as err:

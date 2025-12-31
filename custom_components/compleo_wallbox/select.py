@@ -9,18 +9,16 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, ADDR_LP1_BASE, ADDR_LP2_BASE, OFFSET_PHASE_MODE
 
 _LOGGER = logging.getLogger(__name__)
 
-# Mapping from Value to Text
 PHASE_MODE_OPTIONS = {
     0: "Unavailable",
     1: "Automatic",
     2: "1-Phase",
     3: "3-Phase",
 }
-# Reverse mapping for writing
 PHASE_MODE_TO_VALUE = {v: k for k, v in PHASE_MODE_OPTIONS.items()}
 
 async def async_setup_entry(
@@ -44,7 +42,7 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 class CompleoPhaseMode(CoordinatorEntity, SelectEntity):
-    """Representation of the Phase Mode Selection (0x1009)."""
+    """Representation of the Phase Mode Selection."""
 
     _attr_has_entity_name = True
     _attr_name = "Phase Mode"
@@ -55,8 +53,10 @@ class CompleoPhaseMode(CoordinatorEntity, SelectEntity):
         super().__init__(coordinator)
         self._point_index = point_index
         self._attr_unique_id = f"{uid_prefix}_lp{point_index}_phase_mode"
-        # Register: 0x1009 (LP1), 0x2009 (LP2)
-        self._register = (point_index * 0x1000) + 0x009
+        
+        # Calculate Register Address dynamically
+        base = ADDR_LP1_BASE if point_index == 1 else ADDR_LP2_BASE
+        self._register = base + OFFSET_PHASE_MODE
 
     @property
     def current_option(self) -> str | None:
@@ -90,7 +90,9 @@ class CompleoPhaseMode(CoordinatorEntity, SelectEntity):
                 await self.coordinator.client.connect()
                 await asyncio.sleep(0.1)
             
-            result = await self.coordinator.client.write_register(self._register, value, **{param: 1})
+            kwargs = {param: 1}
+            result = await self.coordinator.client.write_register(self._register, value, **kwargs)
+            
             if not result.isError():
                 await self.coordinator.async_request_refresh()
             else:
