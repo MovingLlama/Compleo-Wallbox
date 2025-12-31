@@ -1,86 +1,119 @@
-# **Compleo Wallbox Integration for Home Assistant**
+# **Compleo Wallbox Integration für Home Assistant**
 
-This custom integration connects **Compleo Charging Stations** (e.g., Compleo Solo, Compleo Duo) to Home Assistant via Modbus TCP.
+Eine benutzerdefinierte Home Assistant Integration für **Compleo Wallboxen** (z.B. Cito, Duo, Solo, eBox) via Modbus TCP.
 
-It is designed to automatically detect available charging points and provides extensive monitoring and control capabilities.
+Diese Integration verwandelt deine Wallbox in einen intelligenten Energiemanager. Sie unterstützt nicht nur das Auslesen von Werten, sondern bietet integrierte Logiken für **PV-Überschussladen**, **Lastmanagement** und spezielle Modi für zickige Elektroautos (wie die **Renault Zoe**).
 
-## **✨ Features**
+## **✨ Funktionen**
 
-* **Auto-Discovery:** Automatically detects Compleo wallboxes on your network via Zeroconf.  
-* **Multi-Point Support:**  
-  * Works with **Compleo Solo** (1 Charging Point).  
-  * Works with **Compleo Duo** (2 Charging Points) \- automatically creates a separate device for the second point.  
-* **Real-Time Monitoring:**  
-  * Current Power (W)  
-  * Total Energy (kWh)  
-  * Current per Phase (L1, L2, L3)  
-  * Voltage per Phase (L1, L2, L3)  
-  * Status Codes (translated to readable text)  
-* **Control:**  
-  * **Charging Power Limit:** Set the maximum allowed charging power (Watts) globally for the station.
+* **Automatische Erkennung:** Erkennt automatisch die Anzahl der Ladepunkte (Solo/Duo).  
+* **Echtzeit-Daten:** Leistung, Ströme, Spannungen, Energie (Sitzung & Gesamt/Lifetime), RFID-Tags, Status- und Fehlercodes.  
+* **Steuerung:** Starten/Stoppen (via Leistungsvorgabe), Phasen-Umschaltung (1ph/3ph).  
+* **Smart Charging Logik (Integriert):**  
+  * **Schnellladen:** Maximale Power auf Knopfdruck.  
+  * **Begrenzt:** Manuell einstellbares Limit (z.B. 3.6 kW).  
+  * **Solar:** Dynamische Regelung basierend auf PV-Überschuss.  
+* **Zoe-Modus (ALT Mode):** Spezielle Hysterese- und Umschaltlogik für Fahrzeuge mit hohem Mindestladestrom.  
+* **Robustheit:** "Brute-Force" Modbus-Kommunikation, die auch mit älteren Firmware-Versionen oder zickigen Schnittstellen zurechtkommt.
 
-## **🚀 Installation**
+## **🔋 Smart Charging Modi**
 
-### **Option 1: Via HACS (Recommended)**
+Jeder Ladepunkt verfügt über ein Dropdown-Menü **"Charging Mode"**.
 
-1. Open HACS in Home Assistant.  
-2. Go to "Integrations" \> Top right menu \> "Custom repositories".  
-3. Add the URL of this repository and select category **Integration**.  
-4. Search for **Compleo Wallbox** and install it.  
-5. Restart Home Assistant.
+### **1\. Schnellladen (Fast)**
 
-### **Option 2: Manual Installation**
+Die Wallbox wird auf die maximal mögliche Leistung gesetzt (Standard 11 kW, hardwareabhängig). Ignoriert Solarüberschuss.
 
-1. Download the custom\_components/compleo\_wallbox folder from this repository.  
-2. Copy the folder into your Home Assistant config/custom\_components/ directory.  
-3. Restart Home Assistant.
+### **2\. Begrenztes Laden (Limited)**
 
-## **⚙️ Configuration**
+Die Wallbox lädt mit einem festen Wert, den du im Eingabefeld **"Config: Limited Mode"** einstellen kannst (Standard: 3600 W). Ideal für das langsame Laden über Nacht.
 
-1. Navigate to **Settings** \> **Devices & Services**.  
-2. Click **\+ Add Integration**.  
-3. Search for **Compleo Wallbox**.  
-4. **Auto-Discovery:** If your wallbox is found automatically, simply click "Configure".  
-5. **Manual:** If not found, enter the **IP Address** and **Port** (Default: 502).
+### **3\. Solarladen (Solar)**
 
-## **📊 Entities & Devices**
+Die Wallbox regelt die Leistung dynamisch basierend auf dem verfügbaren Überschuss.
 
-The integration creates a structured device hierarchy:
+* **Voraussetzung:** Du musst den aktuellen PV-Überschuss (in Watt) zyklisch in die Entität number.compleo\_lpX\_input\_solar\_excess schreiben (siehe Automatisierung unten).  
+* **Puffer:** Es werden standardmäßig 500W vom Überschuss abgezogen, um Netzbezug zu vermeiden.
 
-### **1\. Main Device: "Compleo Wallbox"**
+## **🚗 Zoe-Modus (ALT Mode)**
 
-Represents the physical unit and global settings.
+Aktivierbar über den Schalter **"ALT Mode (Zoe)"**.
 
-* **Number:** Charging Power Limit (Slider, 0W \- 22000W)  
-* **Diagnostic:** Firmware Version
+Dieser Modus ist für Fahrzeuge gedacht, die einen hohen Mindestladestrom benötigen (z.B. Renault Zoe: min. 8A bis 10A) oder empfindlich auf häufige Schaltvorgänge reagieren.
 
-### **2\. Sub-Devices: "Charging Point 1" (and "Charging Point 2")**
+**Funktionsweise im Solar-Modus:**
 
-Represents the individual charging sockets.
+1. **Phasen-Management:** Solange der Solarüberschuss nicht für 3-phasiges Laden mit Mindeststrom reicht (z.B. 3 \* 230V \* 8A \= ca. 5.5 kW), wird **1-phasiges Laden** erzwungen. Erst wenn der Überschuss stabil darüber liegt, wird auf 3 Phasen geschaltet.  
+2. **Mindeststrom:** Einstellbar über **"Config: Zoe Min Amps"** (Standard 8A).  
+3. **Intelligente Hysterese (Schwankungs-Glättung):**  
+   * **Strom steigt:** Der Ladestrom wird erst erhöht, wenn der neue Wert für **20 Minuten** stabil verfügbar war (verhindert Hochregeln bei kurzen Wolkenlücken).  
+   * **Strom sinkt (leicht):** Der Ladestrom wird für **15 Minuten** gehalten, bevor er reduziert wird.  
+   * **Strom bricht ein:** Fällt der Überschuss um mehr als **10%**, wird die Leistung **sofort** reduziert, um Netzbezug zu verhindern.
 
-* **Sensor:** Power (W)  
-* **Sensor:** Total Energy (kWh)  
-* **Sensor:** Status (Ready, Charging, Error, etc.)  
-* **Sensor:** Voltage L1, L2, L3 (V)  
-* **Sensor:** Current L1, L2, L3 (A)
+## **🛠️ Einrichtung & Konfiguration**
 
-## **🐛 Troubleshooting & Debugging**
+### **Installation via HACS**
 
-If you experience issues (e.g., entities showing "Unknown" or connection drops), you can enable detailed Modbus debugging. This will log exactly which registers are read and the raw data received.
+1. Füge dieses Repository als "Benutzerdefiniertes Repository" in HACS hinzu.  
+2. Installiere "Compleo Wallbox".  
+3. Starte Home Assistant neu.
 
-Add this to your configuration.yaml:
+### **Konfiguration**
 
-logger:  
-  default: info  
-  logs:  
-    custom\_components.compleo\_wallbox: debug
+1. Gehe zu **Einstellungen** \-\> **Geräte & Dienste** \-\> **Integration hinzufügen**.  
+2. Suche nach **Compleo Wallbox**.  
+3. Gib die **IP-Adresse** deiner Wallbox und den **Port** (Standard 502\) ein.
 
-Restart Home Assistant and check the logs (**Settings** \> **System** \> **Logs**) for lines starting with custom\_components.compleo\_wallbox.
+### **Automatisierungs-Beispiel (Solar)**
 
-## **Technical Details**
+Damit das Solarladen funktioniert, musst du deinen Überschuss an die Integration senden. Erstelle eine Automatisierung, die z.B. alle 30 Sekunden läuft:
 
-* **Protocol:** Modbus TCP  
-* **Default Port:** 502  
-* **Update Interval:** 30 seconds (default)
+alias: "Wallbox: Solar Überschuss senden"  
+description: "Sendet den aktuellen PV-Überschuss an die Compleo Wallbox Logik"  
+trigger:  
+  \- platform: state  
+    entity\_id: sensor.mein\_smart\_meter\_power  \# Dein Sensor (Negativ \= Einspeisung, Positiv \= Bezug)  
+    \# ODER Zeitgesteuert:  
+  \- platform: time\_pattern  
+    seconds: "/30"  
+condition: \[\]  
+action:  
+  \- service: number.set\_value  
+    target:  
+      entity\_id: number.compleo\_wallbox\_lp1\_input\_solar\_excess  
+    data:  
+      \# Beispiel: Wenn Einspeisung negativ ist (z.B. \-2000W), sende 2000\. Sonst 0\.  
+      value: \>  
+        {% set grid \= states('sensor.mein\_smart\_meter\_power') | float(0) %}  
+        {% if grid \< 0 %}  
+          {{ grid | abs }}  
+        {% else %}  
+          0  
+        {% endif %}  
+mode: single
 
-*Disclaimer: This integration is an open-source project and not officially affiliated with Compleo Charging Solutions.*
+## **📊 Verfügbare Entitäten (Auszug)**
+
+| Typ | Name | Beschreibung |
+| :---- | :---- | :---- |
+| **Sensor** | Total Power (Station) | Gesamte aktuelle Leistung der Station |
+| **Sensor** | Station Energy (Lifetime) | Gesamtzählerstand (alle Ladepunkte) |
+| **Sensor** | LP1 Power | Aktuelle Leistung Ladepunkt 1 |
+| **Sensor** | LP1 Total Energy (Lifetime) | Zählerstand Ladepunkt 1 |
+| **Sensor** | LP1 RFID Tag | Zuletzt genutzte RFID Karte |
+| **Sensor** | LP1 Status / Error | Text-Status (z.B. "Charging", "OverTemp") |
+| **Select** | LP1 Charging Mode | Modus-Wahl: Fast / Limited / Solar |
+| **Select** | LP1 Phase Mode | Hardware-Umschaltung: Auto / 1-Phase / 3-Phase |
+| **Switch** | LP1 ALT Mode (Zoe) | Aktiviert die Zoe-Logik |
+| **Number** | LP1 Config: Limited Mode | Watt-Limit für den "Limited" Modus |
+| **Number** | LP1 Config: Zoe Min Amps | Mindeststrom für Zoe-Logik (z.B. 8A) |
+| **Number** | LP1 Input: Solar Excess | **Hier** muss der PV-Überschuss rein |
+
+## **Fehlerbehebung**
+
+* **"Unavailable" / Keine Verbindung:** Prüfe, ob die Wallbox erreichbar ist (Ping). Manche Compleo-Boxen erlauben nur eine aktive Modbus-Verbindung gleichzeitig. Stoppe andere Systeme (z.B. EVCC), falls vorhanden.  
+* **Geister-Ladepunkt:** Die Integration liest Register 0x0008 um die Anzahl der Punkte zu bestimmen. Falls das bei dir falsch ist, wird standardmäßig 1 Punkt angenommen.
+
+## **Lizenz**
+
+MIT

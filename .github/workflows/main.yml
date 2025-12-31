@@ -3,15 +3,15 @@ name: Automatic Release
 on:
   push:
     branches:
-      - main  # Feuert bei jedem Push auf Main
-  workflow_dispatch: # Erlaubt manuelles Starten
+      - main
+  workflow_dispatch:
 
 jobs:
   release:
     name: Create Release
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Wichtig für Releases
+      contents: write
       
     steps:
       - name: Checkout code
@@ -20,24 +20,36 @@ jobs:
       - name: Generate Version Number
         id: version
         run: |
-          # Wir bauen eine Version aus einer Basisnummer und der GitHub Run Number
-          # Das garantiert, dass die Nummer immer steigt (wichtig für HACS Updates)
-          # Beispiel Ergebnis: v0.1.45
+          # --- KONFIGURATION ---
+          # Hier auf die neue Minor Version stellen (z.B. 0.2)
+          MAJOR_MINOR="0.2" 
+          OFFSET=41
           
-          MAJOR_MINOR="0.1"
-          RUN_NUMBER="${{ github.run_number }}"
+          # --- BERECHNUNG ---
+          # Aktuelle Run Number holen
+          CURRENT_RUN="${{ github.run_number }}"
           
-          VERSION="v${MAJOR_MINOR}.${RUN_NUMBER}"
-          CLEAN_VERSION="${MAJOR_MINOR}.${RUN_NUMBER}"
+          # Hier wird gerechnet: Run Number - 41
+          # $(( ... )) führt mathematische Operationen in Bash aus
+          CALCULATED_NUMBER=$((CURRENT_RUN - OFFSET))
           
+          # Sicherheitscheck (optional): Falls das Ergebnis < 0 ist, auf 0 setzen
+          if [ "$CALCULATED_NUMBER" -lt 0 ]; then
+            CALCULATED_NUMBER=0
+          fi
+
+          VERSION="v${MAJOR_MINOR}.${CALCULATED_NUMBER}"
+          CLEAN_VERSION="${MAJOR_MINOR}.${CALCULATED_NUMBER}"
+          
+          # --- OUTPUT ---
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "CLEAN_VERSION=$CLEAN_VERSION" >> $GITHUB_ENV
           
+          echo "Original Run Number: $CURRENT_RUN"
           echo "Generierte Version: $VERSION"
 
       - name: Update manifest.json (Temporary for Zip)
         run: |
-          # Version in der manifest.json für das ZIP Paket setzen
           jq --arg ver "${{ env.CLEAN_VERSION }}" '.version = $ver' custom_components/compleo_wallbox/manifest.json > manifest.tmp && mv manifest.tmp custom_components/compleo_wallbox/manifest.json
           
           echo "Manifest Version temporär auf ${{ env.CLEAN_VERSION }} gesetzt."
@@ -50,9 +62,9 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.VERSION }}     # Setzt den Tag automatisch (z.B. v0.1.45)
-          name: Release ${{ env.VERSION }} # Titel des Releases
+          tag_name: ${{ env.VERSION }}
+          name: Release ${{ env.VERSION }}
           files: compleo_wallbox.zip
-          generate_release_notes: true     # Generiert automatisch Notizen aus den Commits
+          generate_release_notes: true
           draft: false
           prerelease: false
