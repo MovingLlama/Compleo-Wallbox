@@ -44,34 +44,52 @@ OFFSET_RFID_TAG = 0x010
 OFFSET_METER_READING = 0x018
 OFFSET_DERATING_STATUS = 0x01A
 
-# --- STATUS MAPPINGS ---
+# --- STATUS MAPPINGS (Keys for Translation) ---
+# Values converted to snake_case for translation keys
 CHARGE_POINT_ERROR_CODES = {
-    0: "NoError", 1: "ConnectorLockFailure", 2: "EVCommunicationError", 3: "GroundFailure",
-    4: "HighTemperature", 5: "InternalError", 6: "LocalListConflict", 7: "NoError",
-    8: "OtherError", 9: "OverCurrentFailure", 10: "PowerMeterFailure", 11: "PowerSwitchFailure",
-    12: "ReaderFailure", 13: "ResetFailure", 14: "UnderVoltage", 15: "OverVoltage", 16: "WeakSignal"
+    0: "no_error",
+    1: "connector_lock_failure",
+    2: "ev_communication_error",
+    3: "ground_failure",
+    4: "high_temperature",
+    5: "internal_error",
+    6: "local_list_conflict",
+    7: "no_error",
+    8: "other_error",
+    9: "over_current_failure",
+    10: "power_meter_failure",
+    11: "power_switch_failure",
+    12: "reader_failure",
+    13: "reset_failure",
+    14: "under_voltage",
+    15: "over_voltage",
+    16: "weak_signal"
 }
+
 DERATING_STATUS_MAP = {
-    0: "No derating", 1: "1st Stage", 2: "2nd Stage", 3: "Charging Stopped (OverTemp)", 4: "Sensor Error"
+    0: "no_derating",
+    1: "derating_stage_1",
+    2: "derating_stage_2",
+    3: "charging_stopped_overtemp",
+    4: "sensor_error"
 }
 
 # --- SMART CHARGING LOGIC CONSTANTS ---
-
-# Modes
-MODE_FAST = "Schnellladen (11kW)"
-MODE_LIMITED = "Begrenztes Laden"
-MODE_SOLAR = "Solarladen"
+# Keys for Translation (not display strings anymore)
+MODE_FAST = "fast"
+MODE_LIMITED = "limited"
+MODE_SOLAR = "solar"
 CHARGING_MODES = [MODE_FAST, MODE_LIMITED, MODE_SOLAR]
 
 # Defaults
-DEFAULT_FAST_POWER = 11000  # 11 kW
-DEFAULT_LIMITED_POWER = 3600 # 3.6 kW
-DEFAULT_SOLAR_BUFFER = 500   # Watt Abzug vom Überschuss
-DEFAULT_ZOE_MIN_CURRENT = 8  # Ampere
+DEFAULT_FAST_POWER = 11000
+DEFAULT_LIMITED_POWER = 3600
+DEFAULT_SOLAR_BUFFER = 500
+DEFAULT_ZOE_MIN_CURRENT = 8
 
-# Timers (Minuten)
+# Timers (Minutes)
 TIME_HOLD_RISING = 20
 TIME_HOLD_FALLING = 15
 
 # Thresholds
-THRESHOLD_DROP_PERCENT = 10 # Sofortige Anpassung bei > 10% Abfall
+THRESHOLD_DROP_PERCENT = 10

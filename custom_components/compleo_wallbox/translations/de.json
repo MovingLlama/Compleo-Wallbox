@@ -2,35 +2,121 @@
   "config": {
     "step": {
       "user": {
-        "title": "Verbindung zur Compleo Wallbox",
+        "title": "Mit Compleo Wallbox verbinden",
+        "description": "Bitte geben Sie die Verbindungsinformationen für Ihre Wallbox ein.",
         "data": {
-          "name": "Name des Geräts",
           "host": "IP-Adresse",
-          "port": "Port (Standard 502)"
+          "port": "Port",
+          "name": "Name"
         }
       }
     },
     "error": {
-      "cannot_connect": "Verbindung fehlgeschlagen",
-      "unknown": "Unerwarteter Fehler"
+      "cannot_connect": "Verbindung fehlgeschlagen"
     },
     "abort": {
       "already_configured": "Gerät ist bereits konfiguriert"
     }
   },
   "entity": {
+    "select": {
+      "phase_mode": {
+        "name": "Phasenmodus",
+        "state": {
+          "unavailable": "Nicht verfügbar",
+          "automatic": "Automatisch",
+          "1_phase": "1-Phasig",
+          "3_phase": "3-Phasig"
+        }
+      },
+      "charging_mode": {
+        "name": "Lademodus",
+        "state": {
+          "fast": "Schnellladen (Max)",
+          "limited": "Begrenzt",
+          "solar": "Solarladen"
+        }
+      }
+    },
+    "switch": {
+      "zoe_mode": {
+        "name": "ALT Modus"
+      }
+    },
+    "number": {
+      "power_setpoint_abs": { "name": "Leistungsgrenze (Station)" },
+      "max_schieflast": { "name": "Max. Schieflast" },
+      "fallback_power": { "name": "Fallback Leistung" },
+      "max_power_limit": { "name": "Max. Leistung (Hardware)" },
+      "solar_excess": { "name": "Input: Solar Überschuss" },
+      "manual_limit": { "name": "Config: Begrenzte Leistung" },
+      "zoe_min_current": { "name": "Config: Min Ampere (ALT)" }
+    },
     "sensor": {
+      "total_power": { "name": "Gesamtleistung (Station)" },
+      "total_current_l1": { "name": "Gesamtstrom L1" },
+      "total_current_l2": { "name": "Gesamtstrom L2" },
+      "total_current_l3": { "name": "Gesamtstrom L3" },
+      "unused_power": { "name": "Ungenutzte Leistung" },
+      "total_energy_session": { "name": "Energie (Sitzung, Station)" },
+      "total_energy_total": { "name": "Energie (Gesamt, Station)" },
+      "current_power": { "name": "Leistung" },
+      "energy_session": { "name": "Energie (Sitzung)" },
+      "meter_reading": { "name": "Zählerstand (Gesamt)" },
+      "voltage_l1": { "name": "Spannung L1" },
+      "voltage_l2": { "name": "Spannung L2" },
+      "voltage_l3": { "name": "Spannung L3" },
+      "current_l1": { "name": "Strom L1" },
+      "current_l2": { "name": "Strom L2" },
+      "current_l3": { "name": "Strom L3" },
+      "phase_switch_count": { "name": "Phasenwechsel Zähler" },
+      "charging_time": { "name": "Ladezeit" },
+      "rfid_tag": { "name": "RFID Tag" },
       "status_code": {
+        "name": "Status",
         "state": {
           "0": "Verfügbar",
           "1": "Vorbereitung",
           "2": "Lädt",
-          "3": "Pausiert (EVSE)",
-          "4": "Pausiert (EV)",
-          "5": "Abschließen",
+          "3": "Pausiert (EV)",
+          "4": "Pausiert (EVSE)",
+          "5": "Abgeschlossen",
           "6": "Reserviert",
           "7": "Nicht verfügbar",
           "8": "Fehler"
+        }
+      },
+      "error_code": {
+        "name": "Fehlercode",
+        "state": {
+          "no_error": "Kein Fehler",
+          "connector_lock_failure": "Stecker-Verriegelung Fehler",
+          "ev_communication_error": "EV Kommunikationsfehler",
+          "ground_failure": "Erdungsfehler",
+          "high_temperature": "Übertemperatur",
+          "internal_error": "Interner Fehler",
+          "local_list_conflict": "Listenkonflikt",
+          "other_error": "Anderer Fehler",
+          "over_current_failure": "Überstrom",
+          "power_meter_failure": "Zählerfehler",
+          "power_switch_failure": "Schalterfehler",
+          "reader_failure": "Leserfehler",
+          "reset_failure": "Reset Fehler",
+          "under_voltage": "Unterspannung",
+          "over_voltage": "Überspannung",
+          "weak_signal": "Schwaches Signal",
+          "unknown_error": "Unbekannter Fehler"
+        }
+      },
+      "derating_status": {
+        "name": "Temperatur Derating",
+        "state": {
+          "no_derating": "Kein Derating",
+          "derating_stage_1": "Stufe 1",
+          "derating_stage_2": "Stufe 2",
+          "charging_stopped_overtemp": "Gestoppt (Überhitzung)",
+          "sensor_error": "Sensorfehler",
+          "unknown_status": "Unbekannt"
         }
       }
     }

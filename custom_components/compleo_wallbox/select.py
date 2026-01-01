@@ -10,13 +10,20 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     DOMAIN, ADDR_LP1_BASE, ADDR_LP2_BASE, OFFSET_PHASE_MODE,
-    CHARGING_MODES, MODE_FAST
+    CHARGING_MODES
 )
 
 _LOGGER = logging.getLogger(__name__)
 
-PHASE_MODE_OPTIONS = { 0: "Unavailable", 1: "Automatic", 2: "1-Phase", 3: "3-Phase" }
-PHASE_MODE_TO_VALUE = {v: k for k, v in PHASE_MODE_OPTIONS.items()}
+# Map internal register values to translation keys
+PHASE_MODE_MAP = {
+    0: "unavailable",
+    1: "automatic",
+    2: "1_phase",
+    3: "3_phase"
+}
+# Map keys back to register values
+PHASE_MODE_KEYS_TO_VALUE = {v: k for k, v in PHASE_MODE_MAP.items()}
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback) -> None:
     coordinator = hass.data[DOMAIN][entry.entry_id]
@@ -35,9 +42,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 class CompleoPhaseMode(CoordinatorEntity, SelectEntity):
     """Real Phase Mode Register."""
     _attr_has_entity_name = True
-    _attr_name = "Phase Mode"
+    _attr_translation_key = "phase_mode"
     _attr_icon = "mdi:current-ac"
-    _attr_options = list(PHASE_MODE_OPTIONS.values())
+    
+    # Options are now keys, translated by HA
+    _attr_options = list(PHASE_MODE_MAP.values())
 
     def __init__(self, coordinator, uid_prefix, point_index):
         super().__init__(coordinator)
@@ -51,7 +60,7 @@ class CompleoPhaseMode(CoordinatorEntity, SelectEntity):
         if not self.coordinator.data: return None
         points = self.coordinator.data.get("points", {})
         val = points.get(self._point_index, {}).get("phase_mode")
-        if val in PHASE_MODE_OPTIONS: return PHASE_MODE_OPTIONS[val]
+        if val in PHASE_MODE_MAP: return PHASE_MODE_MAP[val]
         return None
     
     @property
@@ -62,7 +71,7 @@ class CompleoPhaseMode(CoordinatorEntity, SelectEntity):
         }
 
     async def async_select_option(self, option: str) -> None:
-        value = PHASE_MODE_TO_VALUE.get(option)
+        value = PHASE_MODE_KEYS_TO_VALUE.get(option)
         if value is None: return
         await self.coordinator.async_write_register(self._register, value)
         await self.coordinator.async_request_refresh()
@@ -70,8 +79,10 @@ class CompleoPhaseMode(CoordinatorEntity, SelectEntity):
 class CompleoChargingMode(CoordinatorEntity, SelectEntity):
     """Virtual Smart Charging Mode Selector."""
     _attr_has_entity_name = True
-    _attr_name = "Charging Mode"
+    _attr_translation_key = "charging_mode"
     _attr_icon = "mdi:car-electric-mode-selector"
+    
+    # Options are keys ("fast", "limited", "solar") defined in const.py
     _attr_options = CHARGING_MODES
 
     def __init__(self, coordinator, uid_prefix, point_index):
@@ -86,7 +97,7 @@ class CompleoChargingMode(CoordinatorEntity, SelectEntity):
     async def async_select_option(self, option: str) -> None:
         self.coordinator.logic.update_input(self._point_index, "mode", option)
         self.async_write_ha_state()
-        await self.coordinator.async_request_refresh() # Trigger logic immediately
+        await self.coordinator.async_request_refresh()
 
     @property
     def device_info(self):

@@ -11,8 +11,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     DOMAIN, REG_SYS_POWER_LIMIT, REG_SYS_MAX_SCHIEFLAST, REG_SYS_FALLBACK_POWER,
-    ADDR_LP1_BASE, ADDR_LP2_BASE, OFFSET_MAX_POWER,
-    DEFAULT_LIMITED_POWER, DEFAULT_ZOE_MIN_CURRENT
+    ADDR_LP1_BASE, ADDR_LP2_BASE, OFFSET_MAX_POWER
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,30 +25,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     entities = []
     # Global
-    entities.append(CompleoNumber(coordinator, uid_prefix, "power_setpoint_abs", "Station Power Limit", REG_SYS_POWER_LIMIT, UnitOfPower.WATT, NumberDeviceClass.POWER, 0, 44000, 100, 100))
-    entities.append(CompleoNumber(coordinator, uid_prefix, "max_schieflast", "Max Unbalanced Load", REG_SYS_MAX_SCHIEFLAST, UnitOfElectricCurrent.AMPERE, NumberDeviceClass.CURRENT, 6, 32, 0.1, 0.1))
-    entities.append(CompleoNumber(coordinator, uid_prefix, "fallback_power", "Fallback Power", REG_SYS_FALLBACK_POWER, UnitOfPower.WATT, NumberDeviceClass.POWER, 0, 44000, 100, 100))
+    entities.append(CompleoNumber(coordinator, uid_prefix, "power_setpoint_abs", REG_SYS_POWER_LIMIT, UnitOfPower.WATT, NumberDeviceClass.POWER, 0, 44000, 100, 100))
+    entities.append(CompleoNumber(coordinator, uid_prefix, "max_schieflast", REG_SYS_MAX_SCHIEFLAST, UnitOfElectricCurrent.AMPERE, NumberDeviceClass.CURRENT, 6, 32, 0.1, 0.1))
+    entities.append(CompleoNumber(coordinator, uid_prefix, "fallback_power", REG_SYS_FALLBACK_POWER, UnitOfPower.WATT, NumberDeviceClass.POWER, 0, 44000, 100, 100))
 
     # Per Point
     for idx in range(1, num_points + 1):
-        # Hardware Limit
-        entities.append(CompleoPointNumber(coordinator, uid_prefix, idx, "max_power_limit", "Hardware Max Power", OFFSET_MAX_POWER, UnitOfPower.WATT, NumberDeviceClass.POWER, 0, 44000, 100, 100))
-        
-        # Virtual Logic Inputs
-        entities.append(CompleoVirtualNumber(coordinator, uid_prefix, idx, "solar_excess", "Input: Solar Excess", UnitOfPower.WATT, NumberDeviceClass.POWER, 0, 30000, 100))
-        entities.append(CompleoVirtualNumber(coordinator, uid_prefix, idx, "manual_limit", "Config: Limited Mode", UnitOfPower.WATT, NumberDeviceClass.POWER, 0, 22000, 100))
-        # Renamed from "Config: Zoe Min Amps" to "Config: Min Amps (ALT)"
-        entities.append(CompleoVirtualNumber(coordinator, uid_prefix, idx, "zoe_min_current", "Config: Min Amps (ALT)", UnitOfElectricCurrent.AMPERE, NumberDeviceClass.CURRENT, 6, 16, 1))
+        entities.append(CompleoPointNumber(coordinator, uid_prefix, idx, "max_power_limit", OFFSET_MAX_POWER, UnitOfPower.WATT, NumberDeviceClass.POWER, 0, 44000, 100, 100))
+        entities.append(CompleoVirtualNumber(coordinator, uid_prefix, idx, "solar_excess", UnitOfPower.WATT, NumberDeviceClass.POWER, 0, 30000, 100))
+        entities.append(CompleoVirtualNumber(coordinator, uid_prefix, idx, "manual_limit", UnitOfPower.WATT, NumberDeviceClass.POWER, 0, 22000, 100))
+        entities.append(CompleoVirtualNumber(coordinator, uid_prefix, idx, "zoe_min_current", UnitOfElectricCurrent.AMPERE, NumberDeviceClass.CURRENT, 6, 16, 1))
 
     async_add_entities(entities)
 
 class CompleoNumber(CoordinatorEntity, NumberEntity):
-    """System Register Number."""
     _attr_has_entity_name = True
-    def __init__(self, coordinator, uid_prefix, key, name, register, unit, dev_class, min_val, max_val, step, multiplier):
+    def __init__(self, coordinator, uid_prefix, key, register, unit, dev_class, min_val, max_val, step, multiplier):
         super().__init__(coordinator)
         self._key = key
-        self._attr_name = name
+        self._attr_translation_key = key
         self._register = register
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = dev_class
@@ -75,13 +69,12 @@ class CompleoNumber(CoordinatorEntity, NumberEntity):
         await self.coordinator.async_request_refresh()
 
 class CompleoPointNumber(CoordinatorEntity, NumberEntity):
-    """Point Register Number."""
     _attr_has_entity_name = True
-    def __init__(self, coordinator, uid_prefix, point_index, key, name, offset, unit, dev_class, min_val, max_val, step, multiplier):
+    def __init__(self, coordinator, uid_prefix, point_index, key, offset, unit, dev_class, min_val, max_val, step, multiplier):
         super().__init__(coordinator)
         self._point_index = point_index
         self._key = key
-        self._attr_name = name
+        self._attr_translation_key = key
         base = ADDR_LP1_BASE if point_index == 1 else ADDR_LP2_BASE
         self._register = base + offset
         self._attr_native_unit_of_measurement = unit
@@ -109,13 +102,12 @@ class CompleoPointNumber(CoordinatorEntity, NumberEntity):
         await self.coordinator.async_request_refresh()
 
 class CompleoVirtualNumber(CoordinatorEntity, NumberEntity):
-    """Virtual Configuration Number (Stores in Logic)."""
     _attr_has_entity_name = True
-    def __init__(self, coordinator, uid_prefix, point_index, key, name, unit, dev_class, min_val, max_val, step):
+    def __init__(self, coordinator, uid_prefix, point_index, key, unit, dev_class, min_val, max_val, step):
         super().__init__(coordinator)
         self._point_index = point_index
         self._key = key
-        self._attr_name = name
+        self._attr_translation_key = key
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = dev_class
         self._attr_native_min_value = min_val

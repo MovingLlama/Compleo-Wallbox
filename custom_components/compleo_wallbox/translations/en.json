@@ -3,33 +3,120 @@
     "step": {
       "user": {
         "title": "Connect to Compleo Wallbox",
+        "description": "Please enter the connection details for your wallbox.",
         "data": {
           "host": "IP Address",
-          "port": "Port (Default 502)"
+          "port": "Port",
+          "name": "Name"
         }
       }
     },
     "error": {
-      "cannot_connect": "Failed to connect",
-      "unknown": "Unexpected error"
+      "cannot_connect": "Connection failed"
     },
     "abort": {
       "already_configured": "Device is already configured"
     }
   },
   "entity": {
+    "select": {
+      "phase_mode": {
+        "name": "Phase Mode",
+        "state": {
+          "unavailable": "Unavailable",
+          "automatic": "Automatic",
+          "1_phase": "1-Phase",
+          "3_phase": "3-Phase"
+        }
+      },
+      "charging_mode": {
+        "name": "Charging Mode",
+        "state": {
+          "fast": "Fast Charging (Max)",
+          "limited": "Limited",
+          "solar": "Solar Charging"
+        }
+      }
+    },
+    "switch": {
+      "zoe_mode": {
+        "name": "ALT Mode"
+      }
+    },
+    "number": {
+      "power_setpoint_abs": { "name": "Power Limit (Station)" },
+      "max_schieflast": { "name": "Max Unbalanced Load" },
+      "fallback_power": { "name": "Fallback Power" },
+      "max_power_limit": { "name": "Max Power (Hardware)" },
+      "solar_excess": { "name": "Input: Solar Excess" },
+      "manual_limit": { "name": "Config: Limited Power" },
+      "zoe_min_current": { "name": "Config: Min Amps (ALT)" }
+    },
     "sensor": {
+      "total_power": { "name": "Total Power (Station)" },
+      "total_current_l1": { "name": "Total Current L1" },
+      "total_current_l2": { "name": "Total Current L2" },
+      "total_current_l3": { "name": "Total Current L3" },
+      "unused_power": { "name": "Unused Power" },
+      "total_energy_session": { "name": "Energy (Session, Station)" },
+      "total_energy_total": { "name": "Energy (Lifetime, Station)" },
+      "current_power": { "name": "Power" },
+      "energy_session": { "name": "Energy (Session)" },
+      "meter_reading": { "name": "Meter Reading (Lifetime)" },
+      "voltage_l1": { "name": "Voltage L1" },
+      "voltage_l2": { "name": "Voltage L2" },
+      "voltage_l3": { "name": "Voltage L3" },
+      "current_l1": { "name": "Current L1" },
+      "current_l2": { "name": "Current L2" },
+      "current_l3": { "name": "Current L3" },
+      "phase_switch_count": { "name": "Phase Switch Count" },
+      "charging_time": { "name": "Charging Time" },
+      "rfid_tag": { "name": "RFID Tag" },
       "status_code": {
+        "name": "Status",
         "state": {
           "0": "Available",
           "1": "Preparing",
           "2": "Charging",
-          "3": "Suspended EVSE",
-          "4": "Suspended EV",
+          "3": "Suspended (EV)",
+          "4": "Suspended (EVSE)",
           "5": "Finishing",
           "6": "Reserved",
           "7": "Unavailable",
           "8": "Faulted"
+        }
+      },
+      "error_code": {
+        "name": "Error Code",
+        "state": {
+          "no_error": "No Error",
+          "connector_lock_failure": "Connector Lock Failure",
+          "ev_communication_error": "EV Comm Error",
+          "ground_failure": "Ground Failure",
+          "high_temperature": "High Temperature",
+          "internal_error": "Internal Error",
+          "local_list_conflict": "Local List Conflict",
+          "other_error": "Other Error",
+          "over_current_failure": "Over Current",
+          "power_meter_failure": "Power Meter Failure",
+          "power_switch_failure": "Power Switch Failure",
+          "reader_failure": "Reader Failure",
+          "reset_failure": "Reset Failure",
+          "under_voltage": "Under Voltage",
+          "over_voltage": "Over Voltage",
+          "weak_signal": "Weak Signal",
+          "unknown_error": "Unknown Error"
+        }
+      },
+      "derating_status": {
+        "name": "Temp Derating",
+        "state": {
+          "no_derating": "No Derating",
+          "derating_stage_1": "Stage 1",
+          "derating_stage_2": "Stage 2",
+          "charging_stopped_overtemp": "Stopped (OverTemp)",
+          "sensor_error": "Sensor Error",
+          "unknown_status": "Unknown"
         }
       }
     }
