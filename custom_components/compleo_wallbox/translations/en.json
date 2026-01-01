@@ -34,7 +34,8 @@
         "state": {
           "fast": "Fast Charging (Max)",
           "limited": "Limited",
-          "solar": "Solar Charging"
+          "solar": "Solar Charging",
+          "disabled": "Charging Disabled"
         }
       }
     },
@@ -48,9 +49,9 @@
       "max_schieflast": { "name": "Max Unbalanced Load" },
       "fallback_power": { "name": "Fallback Power" },
       "max_power_limit": { "name": "Max Power (Hardware)" },
-      "solar_excess": { "name": "Input: Solar Excess" },
-      "manual_limit": { "name": "Config: Limited Power" },
-      "zoe_min_current": { "name": "Config: Min Amps (ALT)" }
+      "solar_excess": { "name": "Solar Excess" },
+      "manual_limit": { "name": "Limited Power" },
+      "zoe_min_current": { "name": "Min Amps (ALT)" }
     },
     "sensor": {
       "total_power": { "name": "Total Power (Station)" },

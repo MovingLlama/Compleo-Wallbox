@@ -34,7 +34,8 @@
         "state": {
           "fast": "Schnellladen (Max)",
           "limited": "Begrenzt",
-          "solar": "Solarladen"
+          "solar": "Solarladen",
+          "disabled": "Laden deaktiviert"
         }
       }
     },
@@ -48,9 +49,9 @@
       "max_schieflast": { "name": "Max. Schieflast" },
       "fallback_power": { "name": "Fallback Leistung" },
       "max_power_limit": { "name": "Max. Leistung (Hardware)" },
-      "solar_excess": { "name": "Input: Solar Überschuss" },
-      "manual_limit": { "name": "Config: Begrenzte Leistung" },
-      "zoe_min_current": { "name": "Config: Min Ampere (ALT)" }
+      "solar_excess": { "name": "Solar Überschuss" },
+      "manual_limit": { "name": "Begrenzte Leistung" },
+      "zoe_min_current": { "name": "Min Ampere (ALT)" }
     },
     "sensor": {
       "total_power": { "name": "Gesamtleistung (Station)" },

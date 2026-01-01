@@ -29,7 +29,7 @@ from .const import (
     OFFSET_VOLTAGE_L1, OFFSET_VOLTAGE_L2, OFFSET_VOLTAGE_L3,
     OFFSET_PHASE_MODE, OFFSET_RFID_TAG, OFFSET_METER_READING, OFFSET_DERATING_STATUS,
     # Logic Constants
-    MODE_FAST, MODE_LIMITED, MODE_SOLAR,
+    MODE_FAST, MODE_LIMITED, MODE_SOLAR, MODE_DISABLED,
     DEFAULT_FAST_POWER, DEFAULT_LIMITED_POWER, DEFAULT_SOLAR_BUFFER,
     DEFAULT_ZOE_MIN_CURRENT, TIME_HOLD_RISING, TIME_HOLD_FALLING, THRESHOLD_DROP_PERCENT
 )
@@ -105,37 +105,29 @@ class CompleoSmartChargingController:
             raw_solar = state["solar_excess"] - DEFAULT_SOLAR_BUFFER
             if raw_solar < 0: raw_solar = 0
             target_power = raw_solar
+        elif mode == MODE_DISABLED:
+            # Explicitly disable charging
+            target_power = 0
 
         # --- 2. ALT Mode Logic (Forced Phase Switching) ---
-        # Runs ALWAYS if ALT Mode switch is ON, regardless of charging mode (Solar/Manual)
+        # Runs ALWAYS if ALT Mode switch is ON
         if state["zoe_mode"]:
             min_amp = state["zoe_min_current"]
-            # Power needed for 3-phase min current: A * 230V * 3
             threshold_3ph = min_amp * 230 * 3
-            
-            # Power needed for 1-phase min current: A * 230V
             min_power_1ph = min_amp * 230
-            
-            # Limit for 1-Phase charging (max 32A -> ~7.4kW)
             max_power_1ph = 32 * 230
 
             # Decide Phases based on available power
             if target_power >= threshold_3ph:
-                # Enough power for 3-Phase -> Force 3-Phase
                 target_phase_mode = 3 
             else:
-                # Not enough for 3-Phase -> Force 1-Phase
                 target_phase_mode = 2 
-                
-                # Safety: If power is somehow > 7.4kW but < threshold_3ph (unlikely with normal settings), cap it
                 if target_power > max_power_1ph:
                     target_power = max_power_1ph
 
             # Check Minimum Power requirement
             if target_power < min_power_1ph:
-                # Below absolute minimum for car -> Stop Charging
                 target_power = 0
-                # We stay in 1-Phase mode (2) to be ready
                 target_phase_mode = 2
 
         # --- 3. Hysteresis (Only in Solar Mode) ---
@@ -163,7 +155,6 @@ class CompleoSmartChargingController:
                     state["stable_target"] = target_power
                     state["last_change_ts"] = now
                 else:
-                    # Keep old target
                     target_power = last_target
             elif target_power < last_target:
                 # Falling (small drop): Hold for TIME_HOLD_FALLING
@@ -173,7 +164,6 @@ class CompleoSmartChargingController:
                 else:
                     target_power = last_target
             
-            # If starting (last_target 0), take immediate
             if last_target == 0 and target_power > 0:
                  state["stable_target"] = target_power
                  state["last_change_ts"] = now
@@ -186,7 +176,7 @@ class CompleoSmartChargingController:
         val_to_write = int(target_power / 100)
         await self.coordinator.async_write_register(base_addr + OFFSET_MAX_POWER, val_to_write)
         
-        # Write Phase Mode if calculated (especially in ALT Mode)
+        # Write Phase Mode if calculated
         if target_phase_mode is not None:
              await self.coordinator.async_write_register(base_addr + OFFSET_PHASE_MODE, target_phase_mode)
 
@@ -371,10 +361,7 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
              data["current_l1"] = rr.registers[2] * 0.1
              data["current_l2"] = rr.registers[3] * 0.1
              data["current_l3"] = rr.registers[4] * 0.1
-             
-             # Combined 32-bit Time: Low (Reg 5) + High (Reg 6)
              data["charging_time"] = rr.registers[5] + (rr.registers[6] << 16)
-             
              data["energy_session"] = rr.registers[7] * 0.1
 
         rr = await self._read_registers_safe("read_input_registers", base + OFFSET_PHASE_SWITCHES, 6)
