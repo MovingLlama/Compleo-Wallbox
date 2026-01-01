@@ -59,7 +59,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 class CompleoSmartChargingController:
-    """Handles the logic for Solar, Manual, and Zoe modes per point."""
+    """Handles the logic for Solar, Manual, and ALT modes per point."""
     def __init__(self, coordinator):
         self.coordinator = coordinator
         self.points_state = {} # Stores virtual state per point
@@ -106,8 +106,9 @@ class CompleoSmartChargingController:
             if raw_solar < 0: raw_solar = 0
             target_power = raw_solar
 
-        # --- 2. Zoe / Phase Logic (Forced Phase Switching) ---
-        if mode == MODE_SOLAR and state["zoe_mode"]:
+        # --- 2. ALT Mode Logic (Forced Phase Switching) ---
+        # Runs ALWAYS if ALT Mode switch is ON, regardless of charging mode (Solar/Manual)
+        if state["zoe_mode"]:
             min_amp = state["zoe_min_current"]
             # Power needed for 3-phase min current: A * 230V * 3
             threshold_3ph = min_amp * 230 * 3
@@ -118,22 +119,25 @@ class CompleoSmartChargingController:
             # Limit for 1-Phase charging (max 32A -> ~7.4kW)
             max_power_1ph = 32 * 230
 
-            if target_power < min_power_1ph:
-                # Not enough for 1-Phase Minimum -> Stop Charging
-                target_power = 0
-                # We stay in 1-Phase mode usually to be ready
+            # Decide Phases based on available power
+            if target_power >= threshold_3ph:
+                # Enough power for 3-Phase -> Force 3-Phase
+                target_phase_mode = 3 
+            else:
+                # Not enough for 3-Phase -> Force 1-Phase
                 target_phase_mode = 2 
-            elif target_power < threshold_3ph:
-                # Active 1-Phase Mode
-                target_phase_mode = 2 # Force 1-Phase
                 
-                # Cap power if calculation exceeds physical 1-phase limit
+                # Safety: If power is somehow > 7.4kW but < threshold_3ph (unlikely with normal settings), cap it
                 if target_power > max_power_1ph:
                     target_power = max_power_1ph
-            else:
-                # Active 3-Phase Mode
-                target_phase_mode = 3 # Force 3-Phase
-        
+
+            # Check Minimum Power requirement
+            if target_power < min_power_1ph:
+                # Below absolute minimum for car -> Stop Charging
+                target_power = 0
+                # We stay in 1-Phase mode (2) to be ready
+                target_phase_mode = 2
+
         # --- 3. Hysteresis (Only in Solar Mode) ---
         if mode == MODE_SOLAR:
             now = time.time()
@@ -182,7 +186,7 @@ class CompleoSmartChargingController:
         val_to_write = int(target_power / 100)
         await self.coordinator.async_write_register(base_addr + OFFSET_MAX_POWER, val_to_write)
         
-        # Write Phase Mode if calculated (especially in Zoe Mode)
+        # Write Phase Mode if calculated (especially in ALT Mode)
         if target_phase_mode is not None:
              await self.coordinator.async_write_register(base_addr + OFFSET_PHASE_MODE, target_phase_mode)
 
@@ -360,15 +364,6 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
              data["phase_mode"] = rr.registers[9]
 
         # Status Block (Offsets 0x001 to 0x008)
-        # Register Map:
-        # [0] 0x001: Status
-        # [1] 0x002: Power
-        # [2] 0x003: L1
-        # [3] 0x004: L2
-        # [4] 0x005: L3
-        # [5] 0x006: Time Low Word (detected by user)
-        # [6] 0x007: Time High Word
-        # [7] 0x008: Energy Session
         rr = await self._read_registers_safe("read_input_registers", base + OFFSET_STATUS_WORD, 8)
         if rr and len(rr.registers)>=8:
              data["status_word"] = rr.registers[0]
@@ -377,7 +372,7 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
              data["current_l2"] = rr.registers[3] * 0.1
              data["current_l3"] = rr.registers[4] * 0.1
              
-             # Combined 32-bit Time: Low + (High << 16)
+             # Combined 32-bit Time: Low (Reg 5) + High (Reg 6)
              data["charging_time"] = rr.registers[5] + (rr.registers[6] << 16)
              
              data["energy_session"] = rr.registers[7] * 0.1
