@@ -27,7 +27,7 @@ from .const import (
     OFFSET_CURRENT_L2, OFFSET_CURRENT_L3, OFFSET_CHARGING_TIME, OFFSET_ENERGY,
     OFFSET_PHASE_SWITCHES, OFFSET_ERROR_CODE, OFFSET_STATUS_CODE,
     OFFSET_VOLTAGE_L1, OFFSET_VOLTAGE_L2, OFFSET_VOLTAGE_L3,
-    OFFSET_PHASE_MODE, OFFSET_RFID_TAG, OFFSET_METER_READING, OFFSET_DERATING_STATUS,
+    OFFSET_PHASE_MODE, OFFSET_RFID_TAG, OFFSET_DERATING_STATUS,
     # Logic Constants
     MODE_FAST, MODE_LIMITED, MODE_SOLAR, MODE_DISABLED,
     DEFAULT_FAST_POWER, DEFAULT_LIMITED_POWER, DEFAULT_SOLAR_BUFFER,
@@ -62,17 +62,16 @@ class CompleoSmartChargingController:
     """Handles the logic for Solar, Manual, and ALT modes per point."""
     def __init__(self, coordinator):
         self.coordinator = coordinator
-        self.points_state = {} # Stores virtual state per point
+        self.points_state = {} 
 
     def init_point(self, index):
         if index not in self.points_state:
             self.points_state[index] = {
-                "mode": MODE_FAST,          # Default Mode
+                "mode": MODE_FAST,
                 "manual_limit": DEFAULT_LIMITED_POWER,
-                "solar_excess": 0,          # Input from HA
+                "solar_excess": 0,
                 "zoe_mode": False,
                 "zoe_min_current": DEFAULT_ZOE_MIN_CURRENT,
-                # Hysteresis State
                 "last_power_target": 0,
                 "last_change_ts": 0,
                 "stable_target": 0
@@ -87,37 +86,29 @@ class CompleoSmartChargingController:
         return self.points_state[index].get(key)
 
     async def run_logic(self, index):
-        """Calculates target power and phase mode, then writes to wallbox."""
         self.init_point(index)
         state = self.points_state[index]
-        
         mode = state["mode"]
         target_power = 0
-        target_phase_mode = None # None means don't change by default
+        target_phase_mode = None 
 
-        # --- 1. Determine Raw Target Power ---
         if mode == MODE_FAST:
             target_power = DEFAULT_FAST_POWER
         elif mode == MODE_LIMITED:
             target_power = state["manual_limit"]
         elif mode == MODE_SOLAR:
-            # Solar Logic: Excess - Buffer
             raw_solar = state["solar_excess"] - DEFAULT_SOLAR_BUFFER
             if raw_solar < 0: raw_solar = 0
             target_power = raw_solar
         elif mode == MODE_DISABLED:
-            # Explicitly disable charging
             target_power = 0
 
-        # --- 2. ALT Mode Logic (Forced Phase Switching) ---
-        # Runs ALWAYS if ALT Mode switch is ON
         if state["zoe_mode"]:
             min_amp = state["zoe_min_current"]
             threshold_3ph = min_amp * 230 * 3
             min_power_1ph = min_amp * 230
             max_power_1ph = 32 * 230
 
-            # Decide Phases based on available power
             if target_power >= threshold_3ph:
                 target_phase_mode = 3 
             else:
@@ -125,18 +116,15 @@ class CompleoSmartChargingController:
                 if target_power > max_power_1ph:
                     target_power = max_power_1ph
 
-            # Check Minimum Power requirement
             if target_power < min_power_1ph:
                 target_power = 0
                 target_phase_mode = 2
 
-        # --- 3. Hysteresis (Only in Solar Mode) ---
         if mode == MODE_SOLAR:
             now = time.time()
             last_target = state["stable_target"]
             last_ts = state["last_change_ts"]
             
-            # Check drop percentage
             is_significant_drop = False
             if last_target > 0:
                 drop_pct = (last_target - target_power) / last_target * 100
@@ -146,18 +134,15 @@ class CompleoSmartChargingController:
             minutes_since_change = (now - last_ts) / 60
             
             if is_significant_drop:
-                # Immediate adjustment down
                 state["stable_target"] = target_power
                 state["last_change_ts"] = now
             elif target_power > last_target:
-                # Rising: Hold for TIME_HOLD_RISING
                 if minutes_since_change >= TIME_HOLD_RISING:
                     state["stable_target"] = target_power
                     state["last_change_ts"] = now
                 else:
                     target_power = last_target
             elif target_power < last_target:
-                # Falling (small drop): Hold for TIME_HOLD_FALLING
                 if minutes_since_change >= TIME_HOLD_FALLING:
                     state["stable_target"] = target_power
                     state["last_change_ts"] = now
@@ -168,15 +153,12 @@ class CompleoSmartChargingController:
                  state["stable_target"] = target_power
                  state["last_change_ts"] = now
         
-        # --- 4. Write to Wallbox ---
         base_addr = ADDR_LP1_BASE if index == 1 else ADDR_LP2_BASE
         if base_addr is None: return
 
-        # Write Power (Offset 0x0)
         val_to_write = int(target_power / 100)
         await self.coordinator.async_write_register(base_addr + OFFSET_MAX_POWER, val_to_write)
         
-        # Write Phase Mode if calculated
         if target_phase_mode is not None:
              await self.coordinator.async_write_register(base_addr + OFFSET_PHASE_MODE, target_phase_mode)
 
@@ -191,7 +173,6 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         self.device_info_map = {} 
         self._strategy_name = None
         
-        # Init Logic Controller
         self.logic = CompleoSmartChargingController(self)
         
         super().__init__(
@@ -207,17 +188,12 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         }
 
     async def _async_update_data(self):
-        """Fetch data AND run logic."""
         try:
-            # 1. Fetch Data
             new_data = await self._fetch_wallbox_data()
-            
-            # 2. Run Logic per Point
             num_points = new_data["system"].get("num_points", 1)
             for i in range(1, num_points + 1):
                 self.logic.init_point(i)
                 await self.logic.run_logic(i)
-            
             return new_data
 
         except Exception as err:
@@ -227,7 +203,6 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
     async def _fetch_wallbox_data(self):
         new_data = {"system": {}, "points": {}}
         
-        # Detect Points
         num_points = 1
         rr = await self._read_registers_safe("read_input_registers", REG_SYS_NUM_POINTS, 1)
         if rr and not (hasattr(rr, 'isError') and rr.isError()) and len(rr.registers) > 0:
@@ -235,7 +210,6 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
             if val in [1, 2]: num_points = val
         new_data["system"]["num_points"] = num_points
 
-        # System Reads
         rr = await self._read_registers_safe("read_holding_registers", REG_SYS_POWER_LIMIT, 1)
         if rr and hasattr(rr, 'registers') and len(rr.registers)>0: new_data["system"]["power_setpoint_abs"] = rr.registers[0]
         
@@ -262,20 +236,17 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         ser = await self._read_string(REG_SYS_SERIAL_NUM, LEN_STRING_REGISTERS)
         if ser: new_data["system"]["serial_number"] = ser
 
-        # Point Reads
         sum_sess = 0.0
-        sum_tot = 0.0
         found = False
         for i in range(1, num_points + 1):
             pd = await self._read_charging_point_data(i)
             if pd:
                 new_data["points"][i] = pd
                 sum_sess += pd.get("energy_session", 0)
-                sum_tot += pd.get("meter_reading", 0)
                 found = True
         
         new_data["system"]["total_energy_session"] = sum_sess
-        new_data["system"]["total_energy_total"] = sum_tot
+        # Note: total_energy_total (Lifetime) removed from coordinator calc as we now use virtual sensors
         
         if not found and not new_data["system"]: raise UpdateFailed("No data")
         return new_data
@@ -347,13 +318,11 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         if base is None: return None
         data = {}
         
-        # Readings
         rr = await self._read_registers_safe("read_holding_registers", base + OFFSET_MAX_POWER, 10)
         if rr and len(rr.registers)>=10:
              data["max_power_limit"] = rr.registers[0]
              data["phase_mode"] = rr.registers[9]
 
-        # Status Block (Offsets 0x001 to 0x008)
         rr = await self._read_registers_safe("read_input_registers", base + OFFSET_STATUS_WORD, 8)
         if rr and len(rr.registers)>=8:
              data["status_word"] = rr.registers[0]
@@ -375,9 +344,6 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         
         rfid = await self._read_string(base + OFFSET_RFID_TAG, 10)
         if rfid: data["rfid_tag"] = rfid
-        
-        rr = await self._read_registers_safe("read_input_registers", base + OFFSET_METER_READING, 1)
-        if rr and len(rr.registers)>0: data["meter_reading"] = rr.registers[0] * 0.1
         
         rr = await self._read_registers_safe("read_input_registers", base + OFFSET_DERATING_STATUS, 1)
         if rr and len(rr.registers)>0: data["derating_status"] = rr.registers[0]

@@ -41,11 +41,10 @@ OFFSET_VOLTAGE_L1 = 0x00D
 OFFSET_VOLTAGE_L2 = 0x00E
 OFFSET_VOLTAGE_L3 = 0x00F
 OFFSET_RFID_TAG = 0x010
-OFFSET_METER_READING = 0x018
+# OFFSET_METER_READING (0x018) entfernt, da nicht funktionsfähig
 OFFSET_DERATING_STATUS = 0x01A
 
 # --- STATUS MAPPINGS (Keys for Translation) ---
-# Values converted to snake_case for translation keys
 CHARGE_POINT_ERROR_CODES = {
     0: "no_error",
     1: "connector_lock_failure",
@@ -75,12 +74,11 @@ DERATING_STATUS_MAP = {
 }
 
 # --- SMART CHARGING LOGIC CONSTANTS ---
-# Keys for Translation (not display strings anymore)
 MODE_FAST = "fast"
 MODE_LIMITED = "limited"
 MODE_SOLAR = "solar"
-MODE_DISABLED = "disabled" # New
-CHARGING_MODES = [MODE_FAST, MODE_LIMITED, MODE_SOLAR, MODE_DISABLED] # Added
+MODE_DISABLED = "disabled"
+CHARGING_MODES = [MODE_FAST, MODE_LIMITED, MODE_SOLAR, MODE_DISABLED]
 
 # Defaults
 DEFAULT_FAST_POWER = 11000
