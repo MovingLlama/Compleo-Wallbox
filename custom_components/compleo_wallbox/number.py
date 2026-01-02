@@ -32,7 +32,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     # Per Point
     for idx in range(1, num_points + 1):
         entities.append(CompleoPointNumber(coordinator, uid_prefix, idx, "max_power_limit", OFFSET_MAX_POWER, UnitOfPower.WATT, NumberDeviceClass.POWER, 0, 44000, 100, 100))
-        entities.append(CompleoVirtualNumber(coordinator, uid_prefix, idx, "solar_excess", UnitOfPower.WATT, NumberDeviceClass.POWER, 0, 30000, 100))
+        # Increased Solar Excess Limit to 100kW (100000 W) to be safe
+        entities.append(CompleoVirtualNumber(coordinator, uid_prefix, idx, "solar_excess", UnitOfPower.WATT, NumberDeviceClass.POWER, 0, 100000, 100))
         entities.append(CompleoVirtualNumber(coordinator, uid_prefix, idx, "manual_limit", UnitOfPower.WATT, NumberDeviceClass.POWER, 0, 22000, 100))
         entities.append(CompleoVirtualNumber(coordinator, uid_prefix, idx, "zoe_min_current", UnitOfElectricCurrent.AMPERE, NumberDeviceClass.CURRENT, 6, 16, 1))
 
