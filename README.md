@@ -20,7 +20,7 @@ The use of this integration, and especially the control functions (Smart Chargin
   * **Limited:** User-definable constant limit (e.g., 3.6 kW).  
   * **Solar:** Dynamic regulation based on your home's PV excess.  
 * **ALT Mode (Alternative Mode):** Special logic with hysteresis and forced phase switching for vehicles with high minimum charging currents (e.g., Renault Zoe).  
-* **Robustness:** Uses "Brute-Force" Modbus communication strategies to handle older firmware versions or unstable connections gracefully.
+* **Built on Home Assistant's Modbus integration:** The connection is provided by Home Assistant (`modbus-connection`), shared with other integrations talking to the same wallbox and re-established automatically. Requires **Home Assistant 2026.9 or newer**.
 
 ## **🔋 Smart Charging Modes**
 
@@ -83,7 +83,9 @@ It is designed for EVs that are difficult to charge with standard logic or requi
 
 1. Go to **Settings** \-\> **Devices & Services** \-\> **Add Integration**.  
 2. Search for **Compleo Wallbox**.  
-3. Enter the **IP Address** of your wallbox and the **Port** (Default: 502).
+3. Enter the **IP Address** of your wallbox and the **Port** (Default: 502). The setup reads a register to make sure the wallbox answers Modbus requests (unit ID 1).
+
+**Note:** A wallbox still configured in the YAML `modbus:` integration is polled over a second, separate connection. Remove the old YAML configuration for the wallbox to avoid two clients writing setpoints.
 
 ### **Automation Example (Solar)**
 

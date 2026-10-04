@@ -53,7 +53,4 @@ class CompleoZoeSwitch(CoordinatorEntity, SwitchEntity):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, f"{self.coordinator.host}_lp{self._point_index}")},
-            "via_device": (DOMAIN, self.coordinator.host),
-        }
+        return self.coordinator.point_device_info(self._point_index)
