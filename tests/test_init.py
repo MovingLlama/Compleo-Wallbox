@@ -28,9 +28,17 @@ async def test_setup_duo(hass, mock_unit, config_entry) -> None:
     # Second charging point detected from register 0x0008
     assert hass.states.get("select.box_point_2_charging_mode") is not None
 
-    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, HOST)})
-    assert device.sw_version == "2.3.1"
-    assert device.model == "ABC"
+    devices = {
+        next(iter(d.identifiers))[1]: d
+        for d in dr.async_entries_for_config_entry(dr.async_get(hass), config_entry.entry_id)
+    }
+    station = devices[HOST]
+    assert station.sw_version == "2.3.1"
+    assert station.model == "ABC"
+    assert station.serial_number == "1234"
+    point = devices[f"{HOST}_lp1"]
+    assert point.name == "Box Point 1"
+    assert point.via_device_id == station.id
 
 
 async def test_unreachable_retries_setup(hass, mock_unit, config_entry) -> None:

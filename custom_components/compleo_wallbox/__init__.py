@@ -19,6 +19,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform, CONF_HOST, CONF_PORT, CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError, HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import (
@@ -63,6 +64,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Raises ConfigEntryNotReady if the wallbox does not answer: HA retries the
     # setup instead of creating the entities with a wrong number of points.
     await coordinator.async_config_entry_first_refresh()
+    # Create the station first: the charging point devices link to it by id
+    station = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id, **coordinator.system_device_info()
+    )
+    coordinator.station_device_id = station.id
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -243,6 +249,8 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         self.unit = unit
         self.host = host
         self.device_name = name
+        # Registry id of the station device, parent of the charging point devices
+        self.station_device_id: str | None = None
 
         self.logic = CompleoSmartChargingController(self, hass, entry_id)
 
@@ -272,13 +280,15 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
 
     def point_device_info(self, index: int) -> DeviceInfo:
         """Device of one charging point, linked to the station."""
-        return DeviceInfo(
+        info = DeviceInfo(
             identifiers={(DOMAIN, f"{self.host}_lp{index}")},
             name=f"{self.device_name} Point {index}",
             manufacturer="Compleo",
             model="Charging Point",
-            via_device=(DOMAIN, self.host),
         )
+        if self.station_device_id is not None:
+            info["via_device_id"] = self.station_device_id
+        return info
 
     async def _async_update_data(self):
         try:
