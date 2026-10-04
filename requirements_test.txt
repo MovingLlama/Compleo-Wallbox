@@ -1,0 +1,7 @@
+# Home Assistant test harness (pulls the matching homeassistant version)
+pytest-homeassistant-custom-component
+# Requirements of the Modbus integration this integration depends on
+modbus-connection[tmodbus]
+pymodbus
+probatio
+ruff

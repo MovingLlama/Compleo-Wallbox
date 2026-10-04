@@ -3,7 +3,7 @@
   "render_readme": true,
   "filename": "compleo_wallbox.zip",
   "zip_release": true,
-  "homeassistant": "2024.1.0",
+  "homeassistant": "2026.9.0",
   "iot_class": "local_polling",
   "keywords": [
     "compleo",

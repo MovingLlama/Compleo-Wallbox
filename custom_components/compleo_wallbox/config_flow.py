@@ -2,18 +2,19 @@
 from __future__ import annotations
 
 import logging
-import asyncio
 from typing import Any
 
 import voluptuous as vol
-from pymodbus.client import AsyncModbusTcpClient
+from modbus_connection import ModbusError, ModbusExceptionError, ModbusTcpParams
 
 from homeassistant import config_entries
-from homeassistant.components import zeroconf
+from homeassistant.components.modbus import async_get_temporary_unit
 from homeassistant.const import CONF_HOST, CONF_PORT, CONF_NAME
 from homeassistant.data_entry_flow import FlowResult, AbortFlow
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
-from .const import DOMAIN, DEFAULT_PORT, DEFAULT_NAME
+from .const import DOMAIN, DEFAULT_PORT, DEFAULT_NAME, DEFAULT_UNIT_ID, REG_SYS_NUM_POINTS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._discovery_info: dict[str, Any] = {}
 
     async def async_step_zeroconf(
-        self, discovery_info: zeroconf.ZeroconfServiceInfo
+        self, discovery_info: ZeroconfServiceInfo
     ) -> FlowResult:
         """Handle zeroconf discovery."""
         host = discovery_info.host
@@ -96,25 +97,25 @@ class CompleoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except AbortFlow:
                 return self.async_abort(reason="already_configured")
 
-            # 2. Test Connection
-            client = AsyncModbusTcpClient(host, port=port, timeout=5)
+            # 2. Test Connection: the wallbox must answer a Modbus request,
+            # an open TCP port alone is not enough
             try:
-                connected = await client.connect()
-                if not connected:
-                    errors["base"] = "cannot_connect"
-                else:
-                    await asyncio.sleep(0.5)
-                    client.close()
-                    
-                    return self.async_create_entry(
-                        title=name,
-                        data=user_input
-                    )
+                async with async_get_temporary_unit(
+                    self.hass, ModbusTcpParams(host=host, port=port), DEFAULT_UNIT_ID
+                ) as unit:
+                    await unit.read_input_registers(REG_SYS_NUM_POINTS, 1)
+            except ModbusExceptionError:
+                # The wallbox answered (with an exception response): reachable
+                pass
+            except (ModbusError, HomeAssistantError) as err:
+                _LOGGER.debug("Connection test to %s:%s failed: %s", host, port, err)
+                errors["base"] = "cannot_connect"
             except Exception:
                 _LOGGER.exception("Unexpected exception in config flow")
                 errors["base"] = "cannot_connect"
-            finally:
-                client.close()
+
+            if not errors:
+                return self.async_create_entry(title=name, data=user_input)
 
         return self.async_show_form(
             step_id="user",

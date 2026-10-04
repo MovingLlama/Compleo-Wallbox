@@ -117,14 +117,7 @@ class CompleoSystemSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def device_info(self):
-        system_data = self.coordinator.data.get("system", {}) if self.coordinator.data else {}
-        return {
-            "identifiers": {(DOMAIN, self.coordinator.host)},
-            "name": self.coordinator.device_name,
-            "manufacturer": "Compleo",
-            "model": system_data.get("article_number", "Compleo Wallbox"),
-            "sw_version": system_data.get("firmware_version", "Unknown"),
-        }
+        return self.coordinator.system_device_info()
 
 class CompleoPointSensor(CoordinatorEntity, SensorEntity):
     _attr_has_entity_name = True
@@ -156,13 +149,7 @@ class CompleoPointSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, f"{self.coordinator.host}_lp{self._point_index}")},
-            "name": f"{self.coordinator.device_name} Point {self._point_index}",
-            "manufacturer": "Compleo",
-            "model": "Charging Point",
-            "via_device": (DOMAIN, self.coordinator.host),
-        }
+        return self.coordinator.point_device_info(self._point_index)
 
 class CompleoAccumulatedSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
     """Virtual Sensor that accumulates session energy into a lifetime total."""
@@ -272,19 +259,6 @@ class CompleoAccumulatedSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
 
     @property
     def device_info(self):
-        # Same logic as other sensors to attach to correct device
         if self._point_index == 0:
-            return {
-                "identifiers": {(DOMAIN, self.coordinator.host)},
-                "name": self.coordinator.device_name,
-                "manufacturer": "Compleo",
-                "model": "Wallbox (System)",
-            }
-        else:
-            return {
-                "identifiers": {(DOMAIN, f"{self.coordinator.host}_lp{self._point_index}")},
-                "name": f"{self.coordinator.device_name} Point {self._point_index}",
-                "manufacturer": "Compleo",
-                "model": "Charging Point",
-                "via_device": (DOMAIN, self.coordinator.host),
-            }
+            return self.coordinator.system_device_info()
+        return self.coordinator.point_device_info(self._point_index)

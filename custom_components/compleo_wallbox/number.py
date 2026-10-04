@@ -62,7 +62,7 @@ class CompleoNumber(CoordinatorEntity, NumberEntity):
         return None
     
     @property
-    def device_info(self): return {"identifiers": {(DOMAIN, self.coordinator.host)}}
+    def device_info(self): return self.coordinator.system_device_info()
 
     async def async_set_native_value(self, value: float) -> None:
         modbus_val = int(value / self._multiplier)
@@ -95,7 +95,7 @@ class CompleoPointNumber(CoordinatorEntity, NumberEntity):
         return None
     
     @property
-    def device_info(self): return {"identifiers": {(DOMAIN, f"{self.coordinator.host}_lp{self._point_index}")}, "via_device": (DOMAIN, self.coordinator.host)}
+    def device_info(self): return self.coordinator.point_device_info(self._point_index)
 
     async def async_set_native_value(self, value: float) -> None:
         modbus_val = int(value / self._multiplier)
@@ -122,7 +122,7 @@ class CompleoVirtualNumber(CoordinatorEntity, NumberEntity):
         return val if val is not None else 0
 
     @property
-    def device_info(self): return {"identifiers": {(DOMAIN, f"{self.coordinator.host}_lp{self._point_index}")}, "via_device": (DOMAIN, self.coordinator.host)}
+    def device_info(self): return self.coordinator.point_device_info(self._point_index)
 
     async def async_set_native_value(self, value: float) -> None:
         self.coordinator.logic.update_input(self._point_index, self._key, value)

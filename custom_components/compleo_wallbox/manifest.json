@@ -3,13 +3,15 @@
   "name": "Compleo Wallbox",
   "codeowners": ["@movingllama"],
   "config_flow": true,
+  "dependencies": ["modbus"],
   "documentation": "https://github.com/movingllama/Compleo-Wallbox",
   "iot_class": "local_polling",
+  "loggers": ["modbus_connection", "tmodbus"],
   "version": "1.0.0",
   "zeroconf": [
     {
       "type": "_compleo-ccs._tcp.local."
     }
   ],
-  "requirements": ["pymodbus>=3.8.2"]
+  "requirements": []
 }

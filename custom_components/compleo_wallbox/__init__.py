@@ -1,16 +1,26 @@
 """The Compleo Wallbox integration."""
 from __future__ import annotations
 
-import asyncio
 import time
 from datetime import timedelta
 import logging
 
-from pymodbus.client import AsyncModbusTcpClient
+from modbus_connection import (
+    ModbusConnectionError,
+    ModbusError,
+    ModbusExceptionError,
+    ModbusTcpParams,
+    ModbusTimeoutError,
+    ModbusUnit,
+)
+
+from homeassistant.components.modbus import async_get_unit
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform, CONF_HOST, CONF_PORT, CONF_NAME
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryError, HomeAssistantError
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
@@ -18,17 +28,13 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .const import (
-    DOMAIN, DEFAULT_SCAN_INTERVAL,
+    DOMAIN, DEFAULT_SCAN_INTERVAL, DEFAULT_UNIT_ID,
     # Registers
     REG_SYS_POWER_LIMIT, REG_SYS_MAX_SCHIEFLAST, REG_SYS_FALLBACK_POWER,
     REG_SYS_FW_PATCH, REG_SYS_NUM_POINTS, REG_SYS_ARTICLE_NUM, REG_SYS_SERIAL_NUM,
-    LEN_STRING_REGISTERS, REG_SYS_TOTAL_POWER_READ, REG_SYS_TOTAL_CURRENT_L1,
-    REG_SYS_TOTAL_CURRENT_L2, REG_SYS_TOTAL_CURRENT_L3, REG_SYS_UNUSED_POWER,
+    LEN_STRING_REGISTERS, REG_SYS_TOTAL_POWER_READ,
     ADDR_LP1_BASE, ADDR_LP2_BASE,
-    OFFSET_MAX_POWER, OFFSET_STATUS_WORD, OFFSET_POWER, OFFSET_CURRENT_L1,
-    OFFSET_CURRENT_L2, OFFSET_CURRENT_L3, OFFSET_CHARGING_TIME, OFFSET_ENERGY,
-    OFFSET_PHASE_SWITCHES, OFFSET_ERROR_CODE, OFFSET_STATUS_CODE,
-    OFFSET_VOLTAGE_L1, OFFSET_VOLTAGE_L2, OFFSET_VOLTAGE_L3,
+    OFFSET_MAX_POWER, OFFSET_STATUS_WORD, OFFSET_PHASE_SWITCHES,
     OFFSET_PHASE_MODE, OFFSET_RFID_TAG, OFFSET_DERATING_STATUS,
     # Logic Constants
     MODE_FAST, MODE_LIMITED, MODE_SOLAR, MODE_DISABLED, MODE_EXTERNAL, CHARGING_MODES,
@@ -45,17 +51,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     host = entry.data[CONF_HOST]
     port = entry.data[CONF_PORT]
     name = entry.data.get(CONF_NAME, "Compleo Wallbox")
-    coordinator = CompleoDataUpdateCoordinator(hass, host, port, name, entry.entry_id)
+    try:
+        # The connection is owned by the Modbus integration: shared with other
+        # integrations on the same device and closed when the entry unloads.
+        unit = async_get_unit(hass, entry, ModbusTcpParams(host=host, port=port), DEFAULT_UNIT_ID)
+    except HomeAssistantError as err:
+        raise ConfigEntryError(str(err)) from err
+    coordinator = CompleoDataUpdateCoordinator(hass, unit, host, name, entry.entry_id)
     # Restore charging mode etc. before the first refresh, otherwise the first
     # logic run would apply the defaults (fast = 11 kW) after every restart.
     await coordinator.logic.async_load()
-    try:
-        await coordinator.async_config_entry_first_refresh()
-    except ConfigEntryNotReady:
-        # Wallbox not reachable: let HA retry the setup instead of creating
-        # the entities with a wrong number of charging points.
-        coordinator.client.close()
-        raise
+    # Raises ConfigEntryNotReady if the wallbox does not answer: HA retries the
+    # setup instead of creating the entities with a wrong number of points.
+    await coordinator.async_config_entry_first_refresh()
+    # Create the station first: the charging point devices link to it by id
+    station = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id, **coordinator.system_device_info()
+    )
+    coordinator.station_device_id = station.id
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -64,8 +77,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         coordinator = hass.data[DOMAIN].pop(entry.entry_id)
         await coordinator.logic.async_save()
-        if coordinator.client.connected:
-            coordinator.client.close()
     return unload_ok
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -222,198 +233,183 @@ class CompleoSmartChargingController:
 
         # Written every cycle on purpose: acts as keep-alive towards the wallbox
         val_to_write = int(target_power / 100)
-        await self.coordinator.async_write_register(base_addr + OFFSET_MAX_POWER, val_to_write)
-
-        if target_phase_mode is not None:
-            await self.coordinator.async_write_register(base_addr + OFFSET_PHASE_MODE, target_phase_mode)
+        try:
+            await self.coordinator.async_write_register(base_addr + OFFSET_MAX_POWER, val_to_write)
+            if target_phase_mode is not None:
+                await self.coordinator.async_write_register(base_addr + OFFSET_PHASE_MODE, target_phase_mode)
+        except HomeAssistantError as err:
+            # Readings stay valid; the next cycle writes again
+            _LOGGER.warning("Charging point %s: could not write setpoint: %s", index, err)
 
 
 class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching and controlling Compleo Wallbox data."""
 
-    def __init__(self, hass: HomeAssistant, host: str, port: int, name: str, entry_id: str) -> None:
+    def __init__(self, hass: HomeAssistant, unit: ModbusUnit, host: str, name: str, entry_id: str) -> None:
+        self.unit = unit
         self.host = host
-        self.client = AsyncModbusTcpClient(host, port=port, timeout=5)
         self.device_name = name
-        self.device_info_map = {} 
-        self._strategy_name = None
-        
+        # Registry id of the station device, parent of the charging point devices
+        self.station_device_id: str | None = None
+
         self.logic = CompleoSmartChargingController(self, hass, entry_id)
-        
+
         super().__init__(
             hass,
             _LOGGER,
             name=f"{DOMAIN}_{host}",
             update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
         )
-        
+
         self.data = {
             "system": {"num_points": 1},
             "points": {}
         }
 
+    def system_device_info(self) -> DeviceInfo:
+        """Device of the station; every platform must hand out the same info."""
+        system_data = self.data.get("system", {}) if self.data else {}
+        return DeviceInfo(
+            identifiers={(DOMAIN, self.host)},
+            name=self.device_name,
+            manufacturer="Compleo",
+            model=system_data.get("article_number", "Compleo Wallbox"),
+            sw_version=system_data.get("firmware_version"),
+            serial_number=system_data.get("serial_number"),
+        )
+
+    def point_device_info(self, index: int) -> DeviceInfo:
+        """Device of one charging point, linked to the station."""
+        info = DeviceInfo(
+            identifiers={(DOMAIN, f"{self.host}_lp{index}")},
+            name=f"{self.device_name} Point {index}",
+            manufacturer="Compleo",
+            model="Charging Point",
+        )
+        if self.station_device_id is not None:
+            info["via_device_id"] = self.station_device_id
+        return info
+
     async def _async_update_data(self):
         try:
             new_data = await self._fetch_wallbox_data()
-            num_points = new_data["system"].get("num_points", 1)
-            for i in range(1, num_points + 1):
-                self.logic.init_point(i)
-                await self.logic.run_logic(i)
-            return new_data
+        except (ModbusConnectionError, ModbusTimeoutError) as err:
+            raise UpdateFailed(f"Wallbox {self.host} not reachable: {err}") from err
+        except ModbusError as err:
+            raise UpdateFailed(f"Communication error: {err}") from err
 
-        except Exception as err:
-            _LOGGER.error("Error updating/controlling Compleo: %s", err)
-            raise UpdateFailed(f"Communication error: {err}")
+        num_points = new_data["system"].get("num_points", 1)
+        for i in range(1, num_points + 1):
+            await self.logic.run_logic(i)
+        return new_data
+
+    async def _read(self, kind: str, address: int, count: int) -> list[int] | None:
+        """Read registers; None if the wallbox rejects the address (exception response).
+
+        Connection errors and timeouts are raised and fail the whole update.
+        """
+        func = self.unit.read_input_registers if kind == "input" else self.unit.read_holding_registers
+        try:
+            regs = await func(address, count)
+        except ModbusExceptionError as err:
+            _LOGGER.debug("Register 0x%04X (%s, %d) not readable: %s", address, kind, count, err)
+            return None
+        if len(regs) < count:
+            return None
+        return regs
 
     async def _fetch_wallbox_data(self):
         new_data = {"system": {}, "points": {}}
-        
+
         num_points = 1
-        rr = await self._read_registers_safe("read_input_registers", REG_SYS_NUM_POINTS, 1)
-        if rr is None:
-            # No answer at all (connection failed): do not report an empty but "successful" update
-            raise UpdateFailed(f"Wallbox {self.host} not reachable")
-        if not (hasattr(rr, 'isError') and rr.isError()) and len(rr.registers) > 0:
-            val = rr.registers[0]
-            if val in [1, 2]: num_points = val
+        regs = await self._read("input", REG_SYS_NUM_POINTS, 1)
+        if regs and regs[0] in (1, 2):
+            num_points = regs[0]
         new_data["system"]["num_points"] = num_points
 
-        rr = await self._read_registers_safe("read_holding_registers", REG_SYS_POWER_LIMIT, 1)
-        if rr and hasattr(rr, 'registers') and len(rr.registers)>0: new_data["system"]["power_setpoint_abs"] = rr.registers[0]
-        
-        rr = await self._read_registers_safe("read_holding_registers", REG_SYS_MAX_SCHIEFLAST, 1)
-        if rr and hasattr(rr, 'registers') and len(rr.registers)>0: new_data["system"]["max_schieflast"] = rr.registers[0]
-        
-        rr = await self._read_registers_safe("read_holding_registers", REG_SYS_FALLBACK_POWER, 1)
-        if rr and hasattr(rr, 'registers') and len(rr.registers)>0: new_data["system"]["fallback_power"] = rr.registers[0]
+        if regs := await self._read("holding", REG_SYS_POWER_LIMIT, 1):
+            new_data["system"]["power_setpoint_abs"] = regs[0]
+        if regs := await self._read("holding", REG_SYS_MAX_SCHIEFLAST, 1):
+            new_data["system"]["max_schieflast"] = regs[0]
+        if regs := await self._read("holding", REG_SYS_FALLBACK_POWER, 1):
+            new_data["system"]["fallback_power"] = regs[0]
 
-        rr = await self._read_registers_safe("read_input_registers", REG_SYS_FW_PATCH, 2)
-        if rr and hasattr(rr, 'registers') and len(rr.registers)>=2:
-            new_data["system"]["firmware_version"] = f"{rr.registers[1]>>8}.{rr.registers[1]&0xFF}.{rr.registers[0]>>8}"
+        if regs := await self._read("input", REG_SYS_FW_PATCH, 2):
+            new_data["system"]["firmware_version"] = f"{regs[1]>>8}.{regs[1]&0xFF}.{regs[0]>>8}"
 
-        rr = await self._read_registers_safe("read_input_registers", REG_SYS_TOTAL_POWER_READ, 5)
-        if rr and hasattr(rr, 'registers') and len(rr.registers)>=5:
-            new_data["system"]["total_power"] = rr.registers[0] * 100
-            new_data["system"]["total_current_l1"] = rr.registers[1] * 0.1
-            new_data["system"]["total_current_l2"] = rr.registers[2] * 0.1
-            new_data["system"]["total_current_l3"] = rr.registers[3] * 0.1
-            new_data["system"]["unused_power"] = rr.registers[4] * 100
+        if regs := await self._read("input", REG_SYS_TOTAL_POWER_READ, 5):
+            new_data["system"]["total_power"] = regs[0] * 100
+            new_data["system"]["total_current_l1"] = regs[1] * 0.1
+            new_data["system"]["total_current_l2"] = regs[2] * 0.1
+            new_data["system"]["total_current_l3"] = regs[3] * 0.1
+            new_data["system"]["unused_power"] = regs[4] * 100
 
-        art = await self._read_string(REG_SYS_ARTICLE_NUM, LEN_STRING_REGISTERS)
-        if art: new_data["system"]["article_number"] = art
-        ser = await self._read_string(REG_SYS_SERIAL_NUM, LEN_STRING_REGISTERS)
-        if ser: new_data["system"]["serial_number"] = ser
+        # Article and serial number never change: read them once
+        for key, address in (("article_number", REG_SYS_ARTICLE_NUM), ("serial_number", REG_SYS_SERIAL_NUM)):
+            value = (self.data or {}).get("system", {}).get(key)
+            if value is None:
+                value = await self._read_string(address, LEN_STRING_REGISTERS)
+            if value:
+                new_data["system"][key] = value
 
         sum_sess = 0.0
-        found = False
         for i in range(1, num_points + 1):
             pd = await self._read_charging_point_data(i)
-            if pd:
-                new_data["points"][i] = pd
-                sum_sess += pd.get("energy_session", 0)
-                found = True
-        
+            new_data["points"][i] = pd
+            sum_sess += pd.get("energy_session", 0)
+
         new_data["system"]["total_energy_session"] = sum_sess
-        # Note: total_energy_total (Lifetime) removed from coordinator calc as we now use virtual sensors
-        
-        if not found and not new_data["system"]: raise UpdateFailed("No data")
         return new_data
 
-    async def _read_registers_safe(self, func_name, address, count, slave_id=1):
-        if not self.client.connected:
-            await self.client.connect()
-            await asyncio.sleep(0.2)
-        func = getattr(self.client, func_name)
-        strategies = [
-            ("slave_pos_cnt", [address, count], {"slave": slave_id}),
-            ("unit_pos_cnt", [address, count], {"unit": slave_id}),
-            ("no_unit_pos_cnt", [address, count], {}),
-            ("slave_kw_cnt", [address], {"count": count, "slave": slave_id}),
-            ("unit_kw_cnt", [address], {"count": count, "unit": slave_id}),
-            ("no_unit_kw_cnt", [address], {"count": count})
-        ]
-        if self._strategy_name:
-             for i, (name, _, _) in enumerate(strategies):
-                 if name == self._strategy_name:
-                     strategies.insert(0, strategies.pop(i))
-                     break
-        for name, args, kwargs in strategies:
-            try:
-                result = await func(*args, **kwargs)
-                if result is None or (hasattr(result, 'isError') and result.isError()):
-                    return result
-                if hasattr(result, 'registers') and len(result.registers) < count:
-                    continue
-                self._strategy_name = name
-                return result
-            except TypeError: continue
-            except Exception: continue
-        return None
+    async def async_write_register(self, address: int, value: int) -> None:
+        """Write one holding register; raises HomeAssistantError on failure."""
+        try:
+            await self.unit.write_register(address, value)
+        except ModbusError as err:
+            raise HomeAssistantError(f"Writing register 0x{address:04X} failed: {err}") from err
 
-    async def async_write_register(self, address, value, slave_id=1):
-        if not self.client.connected:
-            await self.client.connect()
-            await asyncio.sleep(0.1)
-        async def attempt(kwargs_dict): return await self.client.write_register(address, value, **kwargs_dict)
-        attempts = [{"slave": slave_id}, {"unit": slave_id}, {}]
-        for kwargs in attempts:
-            try:
-                res = await attempt(kwargs)
-                if res and not (hasattr(res, 'isError') and res.isError()): return res
-            except TypeError: continue
-            except Exception: continue
-        return None
+    @staticmethod
+    def _decode_registers_to_string(regs: list[int] | None) -> str | None:
+        if not regs:
+            return None
+        raw = b"".join(reg.to_bytes(2, "big") for reg in regs)
+        return raw.decode("ascii", errors="ignore").rstrip("\x00").strip() or None
 
-    def _decode_registers_to_string(self, rr, count) -> str | None:
-        if rr and hasattr(rr, 'registers'):
-            try:
-                s = b""
-                for reg in rr.registers: s += reg.to_bytes(2, 'big')
-                val = s.decode('ascii', errors='ignore').rstrip('\x00').strip()
-                if val: return val
-            except: pass
-        return None
+    async def _read_string(self, address: int, count: int) -> str | None:
+        val = self._decode_registers_to_string(await self._read("input", address, count))
+        if val:
+            return val
+        return self._decode_registers_to_string(await self._read("holding", address, count))
 
-    async def _read_string(self, address, count, name_debug="Unknown") -> str | None:
-        rr = await self._read_registers_safe("read_input_registers", address, count)
-        val = self._decode_registers_to_string(rr, count)
-        if val: return val
-        rr_hold = await self._read_registers_safe("read_holding_registers", address, count)
-        return self._decode_registers_to_string(rr_hold, count)
-
-    async def _read_charging_point_data(self, index: int) -> dict | None:
+    async def _read_charging_point_data(self, index: int) -> dict:
         base = ADDR_LP1_BASE if index == 1 else ADDR_LP2_BASE
-        if base is None: return None
         data = {}
-        
-        rr = await self._read_registers_safe("read_holding_registers", base + OFFSET_MAX_POWER, 10)
-        if rr and len(rr.registers)>=10:
-             data["max_power_limit"] = rr.registers[0]
-             data["phase_mode"] = rr.registers[9]
 
-        rr = await self._read_registers_safe("read_input_registers", base + OFFSET_STATUS_WORD, 8)
-        if rr and len(rr.registers)>=8:
-             data["status_word"] = rr.registers[0]
-             data["current_power"] = rr.registers[1] * 100
-             data["current_l1"] = rr.registers[2] * 0.1
-             data["current_l2"] = rr.registers[3] * 0.1
-             data["current_l3"] = rr.registers[4] * 0.1
-             data["charging_time"] = rr.registers[5] + (rr.registers[6] << 16)
-             data["energy_session"] = rr.registers[7] * 0.1
+        if regs := await self._read("holding", base + OFFSET_MAX_POWER, 10):
+            data["max_power_limit"] = regs[0]
+            data["phase_mode"] = regs[9]
 
-        rr = await self._read_registers_safe("read_input_registers", base + OFFSET_PHASE_SWITCHES, 6)
-        if rr and len(rr.registers)>=6:
-             data["phase_switch_count"] = rr.registers[0]
-             data["error_code"] = rr.registers[1]
-             data["status_code"] = rr.registers[2]
-             data["voltage_l1"] = rr.registers[3]
-             data["voltage_l2"] = rr.registers[4]
-             data["voltage_l3"] = rr.registers[5]
-        
-        rfid = await self._read_string(base + OFFSET_RFID_TAG, 10)
-        if rfid: data["rfid_tag"] = rfid
-        
-        rr = await self._read_registers_safe("read_input_registers", base + OFFSET_DERATING_STATUS, 1)
-        if rr and len(rr.registers)>0: data["derating_status"] = rr.registers[0]
+        if regs := await self._read("input", base + OFFSET_STATUS_WORD, 8):
+            data["status_word"] = regs[0]
+            data["current_power"] = regs[1] * 100
+            data["current_l1"] = regs[2] * 0.1
+            data["current_l2"] = regs[3] * 0.1
+            data["current_l3"] = regs[4] * 0.1
+            data["charging_time"] = regs[5] + (regs[6] << 16)
+            data["energy_session"] = regs[7] * 0.1
+
+        if regs := await self._read("input", base + OFFSET_PHASE_SWITCHES, 6):
+            data["phase_switch_count"] = regs[0]
+            data["error_code"] = regs[1]
+            data["status_code"] = regs[2]
+            data["voltage_l1"] = regs[3]
+            data["voltage_l2"] = regs[4]
+            data["voltage_l3"] = regs[5]
+
+        if rfid := await self._read_string(base + OFFSET_RFID_TAG, 10):
+            data["rfid_tag"] = rfid
+
+        if regs := await self._read("input", base + OFFSET_DERATING_STATUS, 1):
+            data["derating_status"] = regs[0]
 
         return data

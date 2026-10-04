@@ -65,10 +65,7 @@ class CompleoPhaseMode(CoordinatorEntity, SelectEntity):
     
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, f"{self.coordinator.host}_lp{self._point_index}")},
-            "via_device": (DOMAIN, self.coordinator.host),
-        }
+        return self.coordinator.point_device_info(self._point_index)
 
     async def async_select_option(self, option: str) -> None:
         value = PHASE_MODE_KEYS_TO_VALUE.get(option)
@@ -101,7 +98,4 @@ class CompleoChargingMode(CoordinatorEntity, SelectEntity):
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, f"{self.coordinator.host}_lp{self._point_index}")},
-            "via_device": (DOMAIN, self.coordinator.host),
-        }
+        return self.coordinator.point_device_info(self._point_index)

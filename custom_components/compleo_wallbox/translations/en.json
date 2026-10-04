@@ -9,8 +9,16 @@
           "port": "Port",
           "name": "Name"
         }
+      },
+      "discovery_confirm": {
+        "title": "Compleo Wallbox discovered",
+        "description": "{name} was found at {host}. Do you want to set it up?",
+        "data": {
+          "name": "Name"
+        }
       }
     },
+    "flow_title": "{name}",
     "error": {
       "cannot_connect": "Connection failed"
     },
