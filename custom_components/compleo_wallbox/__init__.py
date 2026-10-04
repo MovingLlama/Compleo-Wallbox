@@ -373,7 +373,10 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         if not regs:
             return None
         raw = b"".join(reg.to_bytes(2, "big") for reg in regs)
-        return raw.decode("ascii", errors="ignore").rstrip("\x00").strip() or None
+        # The string ends at the first NUL; the wallbox leaves garbage behind it
+        # (e.g. "SCPN-B0090\x007")
+        raw = raw.split(b"\x00", 1)[0]
+        return raw.decode("ascii", errors="ignore").strip() or None
 
     async def _read_string(self, address: int, count: int) -> str | None:
         val = self._decode_registers_to_string(await self._read("input", address, count))

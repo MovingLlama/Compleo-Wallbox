@@ -55,7 +55,8 @@ def mock_unit(mock_connection: MockModbusConnection) -> MockModbusUnit:
     unit.input[0x0008] = 2                           # two charging points
     unit.input[0x0006] = [0x0100, 0x0203]            # firmware 2.3.1
     unit.input[0x0009] = [110, 160, 160, 160, 0]
-    unit.input[0x0020] = [0x4142, 0x4300]            # article "ABC"
+    # Strings end at the first NUL, real wallboxes leave garbage behind it
+    unit.input[0x0020] = [0x4142, 0x4300, 0x3700]    # article "ABC" + "\0" + "7"
     unit.input[0x0030] = [0x3132, 0x3334]            # serial "1234"
     _load_point(unit, 0x0100, energy=3.0, power=11000)
     _load_point(unit, 0x0200, energy=0.0, power=0)
