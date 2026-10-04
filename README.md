@@ -45,6 +45,12 @@ Dynamically adjusts charging power based on available excess energy.
 
 Stops the charging process by setting the power limit to 0 Watts.
 
+### **5\. External (no control)**
+
+The integration does not write any setpoints for this charging point. Use this mode if you want to set **"Max Power (Hardware)"** / **"Phase Mode"** manually or if another energy manager controls the wallbox. The wallbox keeps the last written limit.
+
+**Note:** The selected charging mode, "Limited Power", "ALT Mode" and "Min Amps (ALT)" are stored and restored after a Home Assistant restart. The solar excess value is not stored (it starts at 0 until your automation sends a new value). In all modes except "External" the power limit is written every 30 seconds.
+
 ## **🚗 ALT Mode (Alternative / Zoe Mode)**
 
 This mode can be activated via the **"ALT Mode"** switch for each charging point.
@@ -56,6 +62,7 @@ It is designed for EVs that are difficult to charge with standard logic or requi
 1. **Forced Phase Switching:** ALT Mode bypasses the wallbox's internal "Automatic" phase switching. The integration calculates the best mode:  
    * Is there enough power for **3-phase** charging at the minimum current? \-\> **Command: 3-Phase**.  
    * Is there not enough power? \-\> **Command: 1-Phase**.  
+   * The decision uses the smoothed target power (see hysteresis below), and the phase is switched **at most every 10 minutes** to avoid toggling back and forth around the threshold.  
 2. **Minimum Current:** Configurable via **"Config: Min Amps (ALT)"** (Default: 8A).  
 3. **Smart Hysteresis (Smoothing):**  
    * **Power Rising:** Charging current is only increased after the new higher value has been **stable for 20 minutes**. This prevents constant ramping up/down during short cloud breaks, protecting the car's onboard charger.  
@@ -107,7 +114,7 @@ action:
 | **Sensor** | Power (Point) | Current power of the specific charging point. |
 | **Sensor** | Meter Reading (Lifetime) | Accumulated energy counter for the charging point. |
 | **Sensor** | RFID Tag | Last used RFID tag. |
-| **Select** | Charging Mode | Logic Selection: Fast / Limited / Solar / Disabled. |
+| **Select** | Charging Mode | Logic Selection: Fast / Limited / Solar / Disabled / External. |
 | **Select** | Phase Mode | Hardware Switching: Automatic / 1-Phase / 3-Phase. |
 | **Switch** | ALT Mode | Enables special Zoe logic. |
 | **Number** | Config: Limited Power | Watt limit for "Limited" mode. |

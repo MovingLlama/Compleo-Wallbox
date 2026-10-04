@@ -35,7 +35,8 @@
           "fast": "Schnellladen (Max)",
           "limited": "Begrenzt",
           "solar": "Solarladen",
-          "disabled": "Laden deaktiviert"
+          "disabled": "Laden deaktiviert",
+          "external": "Extern (keine Steuerung)"
         }
       }
     },

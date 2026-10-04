@@ -6,7 +6,7 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.helpers.restore_state import RestoreEntity, RestoredExtraData
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     UnitOfElectricCurrent,
@@ -55,7 +55,7 @@ async def async_setup_entry(
     sensors.append(
         CompleoAccumulatedSensor(
             coordinator, uid_prefix, 0, # 0 = System
-            "total_energy_total", "total_energy_session", # Target key, Source key
+            "total_energy_total", "energy_session", # Target key, Source key (summed over all points)
             UnitOfEnergy.KILO_WATT_HOUR, SensorDeviceClass.ENERGY, SensorStateClass.TOTAL_INCREASING
         )
     )
@@ -184,7 +184,17 @@ class CompleoAccumulatedSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
             self._attr_unique_id = f"{uid_prefix}_lp{point_index}_{key}"
 
         self._total_value = 0.0
-        self._last_session_value = 0.0
+        # Last seen session value per charging point (the station sensor tracks all points)
+        self._last_sessions: dict[int, float] = {}
+        self._restored = False
+
+    def _source_points(self) -> list[int]:
+        if self._point_index != 0:
+            return [self._point_index]
+        num_points = 1
+        if self.coordinator.data:
+            num_points = self.coordinator.data.get("system", {}).get("num_points", 1)
+        return list(range(1, num_points + 1))
 
     @property
     def native_value(self):
@@ -192,52 +202,72 @@ class CompleoAccumulatedSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
-        """Record the last session value to handle restarts correctly."""
-        return {"last_session_value": self._last_session_value}
+        """Expose the tracked session values (informational)."""
+        if self._point_index == 0:
+            return {"last_session_values": {str(k): v for k, v in self._last_sessions.items()}}
+        return {"last_session_value": self._last_sessions.get(self._point_index, 0.0)}
+
+    @property
+    def extra_restore_state_data(self) -> RestoredExtraData:
+        """Stored independently of the state, so it survives an 'unavailable' state at shutdown."""
+        return RestoredExtraData({
+            "total": self._total_value,
+            "last_sessions": {str(k): v for k, v in self._last_sessions.items()},
+        })
 
     async def async_added_to_hass(self):
         """Restore state after restart."""
         await super().async_added_to_hass()
+        extra = await self.async_get_last_extra_data()
+        data = extra.as_dict() if extra else {}
+        if "total" in data:
+            try:
+                self._total_value = float(data["total"])
+                for k, v in data.get("last_sessions", {}).items():
+                    self._last_sessions[int(k)] = float(v)
+                self._restored = True
+                return
+            except (ValueError, TypeError):
+                pass
+
+        # Migration from older versions: total in the state, session in an attribute
         last_state = await self.async_get_last_state()
         if last_state:
             try:
                 self._total_value = float(last_state.state)
-                # Restore the tracking variable
-                if "last_session_value" in last_state.attributes:
-                    self._last_session_value = float(last_state.attributes["last_session_value"])
+                self._restored = True
+                if self._point_index != 0 and "last_session_value" in last_state.attributes:
+                    self._last_sessions[self._point_index] = float(last_state.attributes["last_session_value"])
             except (ValueError, TypeError):
                 pass
 
     def _handle_coordinator_update(self) -> None:
-        """Calculate delta and add to total."""
-        current_session = 0.0
-        
-        # Get source data
-        if self._point_index == 0:
-            # System
-            current_session = self.coordinator.data.get("system", {}).get(self._source_key, 0.0)
-        else:
-            # Point
-            points = self.coordinator.data.get("points", {})
-            current_session = points.get(self._point_index, {}).get(self._source_key, 0.0)
-            
-        if current_session is None:
+        """Calculate delta per charging point and add it to the total."""
+        if not self.coordinator.last_update_success or not self.coordinator.data:
             return
+        points = self.coordinator.data.get("points", {})
 
-        # Calculate Delta
-        delta = current_session - self._last_session_value
-        
-        # Handle Reset (New Session started) or Restart
-        if delta < 0:
-            # Session reset to 0 (or lower value).
-            # Assume the new value is the total gained since 0.
-            delta = current_session
-        
-        # Sanity check: Ignore huge jumps? (Optional)
-        
-        self._total_value += delta
-        self._last_session_value = current_session
-        
+        for idx in self._source_points():
+            current_session = points.get(idx, {}).get(self._source_key)
+            if current_session is None:
+                # Value not read in this cycle: skip instead of assuming 0,
+                # otherwise the whole session would be counted again later.
+                continue
+
+            last = self._last_sessions.get(idx)
+            if last is None:
+                # First value for this point. On a fresh install count the running
+                # session, after a restore/migration we cannot know the history.
+                delta = 0.0 if self._restored else current_session
+            else:
+                delta = current_session - last
+                if delta < 0:
+                    # New session started: the new value is the energy since 0
+                    delta = current_session
+
+            self._total_value += delta
+            self._last_sessions[idx] = current_session
+
         self.async_write_ha_state()
 
     @property

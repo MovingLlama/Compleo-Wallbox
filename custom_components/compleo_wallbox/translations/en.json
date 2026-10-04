@@ -35,7 +35,8 @@
           "fast": "Fast Charging (Max)",
           "limited": "Limited",
           "solar": "Solar Charging",
-          "disabled": "Charging Disabled"
+          "disabled": "Charging Disabled",
+          "external": "External (no control)"
         }
       }
     },

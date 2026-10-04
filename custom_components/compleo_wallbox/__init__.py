@@ -10,6 +10,8 @@ from pymodbus.client import AsyncModbusTcpClient
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform, CONF_HOST, CONF_PORT, CONF_NAME
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
@@ -29,9 +31,10 @@ from .const import (
     OFFSET_VOLTAGE_L1, OFFSET_VOLTAGE_L2, OFFSET_VOLTAGE_L3,
     OFFSET_PHASE_MODE, OFFSET_RFID_TAG, OFFSET_DERATING_STATUS,
     # Logic Constants
-    MODE_FAST, MODE_LIMITED, MODE_SOLAR, MODE_DISABLED,
+    MODE_FAST, MODE_LIMITED, MODE_SOLAR, MODE_DISABLED, MODE_EXTERNAL, CHARGING_MODES,
     DEFAULT_FAST_POWER, DEFAULT_LIMITED_POWER, DEFAULT_SOLAR_BUFFER,
-    DEFAULT_ZOE_MIN_CURRENT, TIME_HOLD_RISING, TIME_HOLD_FALLING, THRESHOLD_DROP_PERCENT
+    DEFAULT_ZOE_MIN_CURRENT, TIME_HOLD_RISING, TIME_HOLD_FALLING, TIME_HOLD_PHASE,
+    THRESHOLD_DROP_PERCENT, PERSISTED_INPUTS, STORAGE_VERSION
 )
 
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.NUMBER, Platform.SELECT, Platform.SWITCH]
@@ -42,11 +45,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     host = entry.data[CONF_HOST]
     port = entry.data[CONF_PORT]
     name = entry.data.get(CONF_NAME, "Compleo Wallbox")
-    coordinator = CompleoDataUpdateCoordinator(hass, host, port, name)
+    coordinator = CompleoDataUpdateCoordinator(hass, host, port, name, entry.entry_id)
+    # Restore charging mode etc. before the first refresh, otherwise the first
+    # logic run would apply the defaults (fast = 11 kW) after every restart.
+    await coordinator.logic.async_load()
     try:
         await coordinator.async_config_entry_first_refresh()
-    except Exception as e:
-        _LOGGER.warning("Initial fetch failed: %s", e)
+    except ConfigEntryNotReady:
+        # Wallbox not reachable: let HA retry the setup instead of creating
+        # the entities with a wrong number of charging points.
+        coordinator.client.close()
+        raise
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
@@ -54,15 +63,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         coordinator = hass.data[DOMAIN].pop(entry.entry_id)
+        await coordinator.logic.async_save()
         if coordinator.client.connected:
             coordinator.client.close()
     return unload_ok
 
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    await Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry.entry_id}").async_remove()
+
 class CompleoSmartChargingController:
     """Handles the logic for Solar, Manual, and ALT modes per point."""
-    def __init__(self, coordinator):
+    def __init__(self, coordinator, hass: HomeAssistant, entry_id: str):
         self.coordinator = coordinator
-        self.points_state = {} 
+        self.points_state = {}
+        self._store = Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry_id}")
 
     def init_point(self, index):
         if index not in self.points_state:
@@ -72,108 +86,159 @@ class CompleoSmartChargingController:
                 "solar_excess": 0,
                 "zoe_mode": False,
                 "zoe_min_current": DEFAULT_ZOE_MIN_CURRENT,
-                "last_power_target": 0,
                 "last_change_ts": 0,
-                "stable_target": 0
+                "stable_target": 0,
+                "phase": None,
+                "phase_change_ts": 0,
             }
+
+    async def async_load(self):
+        """Load the persisted user inputs (mode, limits, ALT settings)."""
+        data = await self._store.async_load() or {}
+        for idx_str, values in data.get("points", {}).items():
+            try:
+                index = int(idx_str)
+            except ValueError:
+                continue
+            self.init_point(index)
+            for key in PERSISTED_INPUTS:
+                if key not in values:
+                    continue
+                if key == "mode" and values[key] not in CHARGING_MODES:
+                    continue
+                self.points_state[index][key] = values[key]
+
+    def _data_to_save(self):
+        return {
+            "points": {
+                str(index): {key: state[key] for key in PERSISTED_INPUTS}
+                for index, state in self.points_state.items()
+            }
+        }
+
+    async def async_save(self):
+        await self._store.async_save(self._data_to_save())
 
     def update_input(self, index, key, value):
         self.init_point(index)
         self.points_state[index][key] = value
+        if key == "zoe_mode" and not value:
+            # Phase is handed back to the wallbox (automatic), forget our decision
+            self.points_state[index]["phase"] = None
+        if key in PERSISTED_INPUTS:
+            self._store.async_delay_save(self._data_to_save, 1)
 
     def get_input(self, index, key):
         self.init_point(index)
         return self.points_state[index].get(key)
 
+    def _smooth_solar(self, state, target_power, now):
+        """Hysteresis for solar mode: hold the target for a while before following."""
+        last_target = state["stable_target"]
+        last_ts = state["last_change_ts"]
+
+        is_significant_drop = False
+        if last_target > 0:
+            drop_pct = (last_target - target_power) / last_target * 100
+            if drop_pct > THRESHOLD_DROP_PERCENT:
+                is_significant_drop = True
+
+        minutes_since_change = (now - last_ts) / 60
+
+        if is_significant_drop:
+            state["stable_target"] = target_power
+            state["last_change_ts"] = now
+        elif target_power > last_target:
+            if minutes_since_change >= TIME_HOLD_RISING:
+                state["stable_target"] = target_power
+                state["last_change_ts"] = now
+            else:
+                target_power = last_target
+        elif target_power < last_target:
+            if minutes_since_change >= TIME_HOLD_FALLING:
+                state["stable_target"] = target_power
+                state["last_change_ts"] = now
+            else:
+                target_power = last_target
+
+        if last_target == 0 and target_power > 0:
+            state["stable_target"] = target_power
+            state["last_change_ts"] = now
+
+        return target_power
+
+    def _alt_phase(self, state, target_power, now):
+        """ALT mode: choose 1-/3-phase from the (smoothed) target, with a minimum hold time."""
+        min_amp = state["zoe_min_current"]
+        threshold_3ph = min_amp * 230 * 3
+        min_power_1ph = min_amp * 230
+        max_power_1ph = 32 * 230
+
+        wanted_phase = 3 if target_power >= threshold_3ph else 2
+        current_phase = state["phase"]
+        if current_phase is not None and wanted_phase != current_phase:
+            minutes_since_switch = (now - state["phase_change_ts"]) / 60
+            if minutes_since_switch < TIME_HOLD_PHASE:
+                # Keep the phase to avoid switching back and forth with every cloud
+                wanted_phase = current_phase
+        if wanted_phase != current_phase:
+            state["phase"] = wanted_phase
+            state["phase_change_ts"] = now
+
+        if wanted_phase == 2 and target_power > max_power_1ph:
+            target_power = max_power_1ph
+        if target_power < min_power_1ph:
+            target_power = 0
+
+        return target_power, wanted_phase
+
     async def run_logic(self, index):
         self.init_point(index)
         state = self.points_state[index]
         mode = state["mode"]
+        if mode == MODE_EXTERNAL:
+            # Setpoints are controlled manually or by another system
+            return
+
+        now = time.time()
         target_power = 0
-        target_phase_mode = None 
+        target_phase_mode = None
 
         if mode == MODE_FAST:
             target_power = DEFAULT_FAST_POWER
         elif mode == MODE_LIMITED:
             target_power = state["manual_limit"]
         elif mode == MODE_SOLAR:
-            raw_solar = state["solar_excess"] - DEFAULT_SOLAR_BUFFER
-            if raw_solar < 0: raw_solar = 0
-            target_power = raw_solar
+            raw_solar = max(state["solar_excess"] - DEFAULT_SOLAR_BUFFER, 0)
+            target_power = self._smooth_solar(state, raw_solar, now)
         elif mode == MODE_DISABLED:
             target_power = 0
 
+        # Phase decision on the smoothed value, so phase and power stay consistent
         if state["zoe_mode"]:
-            min_amp = state["zoe_min_current"]
-            threshold_3ph = min_amp * 230 * 3
-            min_power_1ph = min_amp * 230
-            max_power_1ph = 32 * 230
+            target_power, target_phase_mode = self._alt_phase(state, target_power, now)
 
-            if target_power >= threshold_3ph:
-                target_phase_mode = 3 
-            else:
-                target_phase_mode = 2 
-                if target_power > max_power_1ph:
-                    target_power = max_power_1ph
-
-            if target_power < min_power_1ph:
-                target_power = 0
-                target_phase_mode = 2
-
-        if mode == MODE_SOLAR:
-            now = time.time()
-            last_target = state["stable_target"]
-            last_ts = state["last_change_ts"]
-            
-            is_significant_drop = False
-            if last_target > 0:
-                drop_pct = (last_target - target_power) / last_target * 100
-                if drop_pct > THRESHOLD_DROP_PERCENT:
-                    is_significant_drop = True
-
-            minutes_since_change = (now - last_ts) / 60
-            
-            if is_significant_drop:
-                state["stable_target"] = target_power
-                state["last_change_ts"] = now
-            elif target_power > last_target:
-                if minutes_since_change >= TIME_HOLD_RISING:
-                    state["stable_target"] = target_power
-                    state["last_change_ts"] = now
-                else:
-                    target_power = last_target
-            elif target_power < last_target:
-                if minutes_since_change >= TIME_HOLD_FALLING:
-                    state["stable_target"] = target_power
-                    state["last_change_ts"] = now
-                else:
-                    target_power = last_target
-            
-            if last_target == 0 and target_power > 0:
-                 state["stable_target"] = target_power
-                 state["last_change_ts"] = now
-        
         base_addr = ADDR_LP1_BASE if index == 1 else ADDR_LP2_BASE
-        if base_addr is None: return
 
+        # Written every cycle on purpose: acts as keep-alive towards the wallbox
         val_to_write = int(target_power / 100)
         await self.coordinator.async_write_register(base_addr + OFFSET_MAX_POWER, val_to_write)
-        
+
         if target_phase_mode is not None:
-             await self.coordinator.async_write_register(base_addr + OFFSET_PHASE_MODE, target_phase_mode)
+            await self.coordinator.async_write_register(base_addr + OFFSET_PHASE_MODE, target_phase_mode)
 
 
 class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching and controlling Compleo Wallbox data."""
 
-    def __init__(self, hass: HomeAssistant, host: str, port: int, name: str) -> None:
+    def __init__(self, hass: HomeAssistant, host: str, port: int, name: str, entry_id: str) -> None:
         self.host = host
         self.client = AsyncModbusTcpClient(host, port=port, timeout=5)
         self.device_name = name
         self.device_info_map = {} 
         self._strategy_name = None
         
-        self.logic = CompleoSmartChargingController(self)
+        self.logic = CompleoSmartChargingController(self, hass, entry_id)
         
         super().__init__(
             hass,
@@ -205,7 +270,10 @@ class CompleoDataUpdateCoordinator(DataUpdateCoordinator):
         
         num_points = 1
         rr = await self._read_registers_safe("read_input_registers", REG_SYS_NUM_POINTS, 1)
-        if rr and not (hasattr(rr, 'isError') and rr.isError()) and len(rr.registers) > 0:
+        if rr is None:
+            # No answer at all (connection failed): do not report an empty but "successful" update
+            raise UpdateFailed(f"Wallbox {self.host} not reachable")
+        if not (hasattr(rr, 'isError') and rr.isError()) and len(rr.registers) > 0:
             val = rr.registers[0]
             if val in [1, 2]: num_points = val
         new_data["system"]["num_points"] = num_points

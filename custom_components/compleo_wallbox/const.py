@@ -78,7 +78,13 @@ MODE_FAST = "fast"
 MODE_LIMITED = "limited"
 MODE_SOLAR = "solar"
 MODE_DISABLED = "disabled"
-CHARGING_MODES = [MODE_FAST, MODE_LIMITED, MODE_SOLAR, MODE_DISABLED]
+# External: the integration does not write any setpoints (manual control or other EMS)
+MODE_EXTERNAL = "external"
+CHARGING_MODES = [MODE_FAST, MODE_LIMITED, MODE_SOLAR, MODE_DISABLED, MODE_EXTERNAL]
+
+# Logic inputs that survive a Home Assistant restart (solar_excess is intentionally not stored)
+PERSISTED_INPUTS = ["mode", "manual_limit", "zoe_mode", "zoe_min_current"]
+STORAGE_VERSION = 1
 
 # Defaults
 DEFAULT_FAST_POWER = 11000
@@ -89,6 +95,7 @@ DEFAULT_ZOE_MIN_CURRENT = 8
 # Timers (Minutes)
 TIME_HOLD_RISING = 20
 TIME_HOLD_FALLING = 15
+TIME_HOLD_PHASE = 10
 
 # Thresholds
 THRESHOLD_DROP_PERCENT = 10
